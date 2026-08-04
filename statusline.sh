@@ -96,9 +96,22 @@ if [ "${CLAUDE_STATUSLINE_USAGE_API:-1}" != "0" ]; then
         _tok=""
         [ -f "$_CLAUDE_CFG/.credentials.json" ] \
           && _tok=$(jq -r '.claudeAiOauth.accessToken // empty' "$_CLAUDE_CFG/.credentials.json" 2>/dev/null)
-        [ -z "$_tok" ] && command -v security >/dev/null 2>&1 \
-          && _tok=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
-                    | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
+        if [ -z "$_tok" ] && command -v security >/dev/null 2>&1; then
+          # Keychain service name: plain "Claude Code-credentials" for the
+          # default config dir, but with CLAUDE_CONFIG_DIR set the CLI appends
+          # "-<first 8 hex of sha256(config dir)>" — probe accordingly.
+          _svcs="Claude Code-credentials"
+          if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+            _hash=$(printf '%s' "${_CLAUDE_CFG%/}" | { shasum -a 256 2>/dev/null || sha256sum 2>/dev/null; } | cut -c1-8)
+            [ -n "$_hash" ] && _svcs="Claude Code-credentials-${_hash}
+${_svcs}"
+          fi
+          while IFS= read -r _svc; do
+            _tok=$(security find-generic-password -s "$_svc" -w 2>/dev/null \
+                   | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
+            [ -n "$_tok" ] && break
+          done <<< "$_svcs"
+        fi
         if [ -n "$_tok" ]; then
           _resp=$(curl -sf -m 5 \
                     -H "Authorization: Bearer $_tok" \
@@ -329,25 +342,25 @@ SESSION_PART=""
 [ -n "$SESSION" ] && SESSION_PART=" ${DIM}(${SESSION})${RESET}"
 
 BRANCH=""
+WT_MAIN=""
 GIT_DIR=$(git -C "$DIR" rev-parse --git-dir 2>/dev/null)
 if [ -n "$GIT_DIR" ]; then
   BR=$(git -C "$DIR" -c core.useReplacement=false branch --show-current 2>/dev/null)
   [ -n "$WT_BRANCH" ] && BR="$WT_BRANCH"
 
-  # Worktree detection fallback: Claude Code passes .worktree.name for worktrees
-  # it manages, but any linked worktree has "/worktrees/" in its git-dir. The
-  # main repo root (for the 📂 segment) is the parent of the common git-dir.
-  if [ -z "$WT_NAME" ]; then
-    case "$GIT_DIR" in
-      */worktrees/*)
-        WT_NAME=$(basename "$(git -C "$DIR" rev-parse --show-toplevel 2>/dev/null)")
-        if [ -z "$PROJ_DIR" ] || [ "$PROJ_DIR" = "$DIR" ]; then
-          _common=$(git -C "$DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
-          [ -n "$_common" ] && PROJ_DIR=$(dirname "$_common")
-        fi
-        ;;
-    esac
-  fi
+  # Worktree detection: Claude Code passes .worktree.name for worktrees it
+  # manages, and any linked worktree has "/worktrees/" in its git-dir. The 📂
+  # segment should show the MAIN repo, which is the parent of the common
+  # git-dir — .workspace.project_dir can't be used for that, since for a
+  # session started inside a worktree it just repeats the worktree path.
+  case "$GIT_DIR" in
+    */worktrees/*)
+      [ -z "$WT_NAME" ] \
+        && WT_NAME=$(basename "$(git -C "$DIR" rev-parse --show-toplevel 2>/dev/null)")
+      _common=$(git -C "$DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+      [ -n "$_common" ] && WT_MAIN=$(dirname "$_common")
+      ;;
+  esac
 
   # A single porcelain call yields both upstream divergence and working-tree
   # state, so we summarise the repo right next to the branch name:
@@ -521,7 +534,7 @@ fi
 # worktree, so "where am I" and "which copy" both read at a glance.
 WT_PART=""
 if [ -n "$WT_NAME" ]; then
-  DIR_LABEL=$(abbrev_path "${PROJ_DIR:-$DIR}")
+  DIR_LABEL=$(abbrev_path "${WT_MAIN:-${PROJ_DIR:-$DIR}}")
   WT_PART=" ${BOLD}${GREEN}🌳 ${WT_NAME}${RESET}"
 else
   DIR_LABEL=$(abbrev_path "$DIR")

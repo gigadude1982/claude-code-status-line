@@ -13,7 +13,8 @@ A vibrant, information-dense statusline for [Claude Code](https://claude.ai/code
 - 💭 **thinking** (when extended thinking is on) · 🏎️ **fast** (when `/fast` is engaged)
 - 🎨 **output style** (when not `default`) · session name · 🛠️ agent · vim mode
 - 👤 **account** & org · ✨ **plan**
-- 📂 **directory**, `(owner/name)` repo identity, 🌿 **branch** + git status, 🕐 **last-commit age**, 🔀 **PR**
+- 📂 **directory** (`~`-abbreviated, deep paths collapsed to `~/…/parent/base`) · 🌳 **worktree** badge — inside a git worktree, 📂 shows the *main* repo and 🌳 names the worktree
+- `(owner/name)` repo identity, 🌿 **branch** + git status, 🕐 **last-commit age**, 🔀 **PR**
 
 **Line 2 — context window**
 - 🧠 **mood emoji** by fullness: 🧠 (<70%) → 😅 (70–89%) → 🥵 (≥90%)
@@ -27,8 +28,9 @@ A vibrant, information-dense statusline for [Claude Code](https://claude.ai/code
 - lines changed (+added / −removed) · ✏️ **lines/hr** velocity
 - ⏱️ session duration · 🛰️ time spent waiting on the API · 💵 **cost velocity** ($/hr with a 🐢→🔥 burn emoji)
 
-**Line 4 — rate limits**
-- ⚡ **5-hour** and 📅 **7-day** gradient bars with used % and reset countdowns (with absolute reset time)
+**Lines 4–5 — plan usage limits (mirrors claude.ai › Settings › Usage)**
+- ⚡ **session** (5-hour window) · 📅 **all models** (weekly) · ✨ **per-model weekly** rows (e.g. *Fable*) · 💳 **usage credits** toggle
+- the same rows, values, and floor-rounded percentages as claude.ai's Usage panel, with gradient bars and reset countdowns (weekly resets show days + the absolute day/time, e.g. `5d18h (sun 8/9 3:00am)`)
 
 ### Git status
 
@@ -62,9 +64,19 @@ The 🛫 **runway** projects an ETA to a full context window from that history, 
 
 Bars color each cell by its position along a green → red ramp, so color signals how full something is: a low bar is all green ("plenty of room"), and it warms through yellow and orange to red as it fills.
 
-### Rate limit caching
+### Accurate usage limits (claude.ai parity)
 
-Claude Code only includes rate limit data in the statusline JSON when it receives fresh headers from the API. Without caching, the rate limit bars disappear between messages. This script persists the last known values to a temp file and shows a `(cached Xm ago)` label when displaying stale data, so the bars are always visible.
+The statusline JSON that Claude Code pipes in only ever carries the 5-hour session window and the all-models weekly window — the **per-model weekly limits** (e.g. the "Fable" row) and the **usage-credits** state shown on claude.ai never appear in it. To display those, the script queries `GET https://api.anthropic.com/api/oauth/usage` — the *same endpoint the claude.ai Usage panel and Claude Code's own `/usage` screen read* — so the numbers match claude.ai exactly.
+
+How it behaves:
+
+- **Non-blocking** — the response is cached to a temp file (default TTL 180s, tune with `CLAUDE_STATUSLINE_USAGE_TTL`); refreshes happen in a detached background job, so rendering never waits on the network. Data older than 10 minutes is flagged `(as of Xm ago)`.
+- **Auth** — the OAuth token is read from `~/.claude/.credentials.json` (Linux) or the macOS Keychain (`Claude Code-credentials`), used for the one HTTPS call to `api.anthropic.com`, and never written to disk. On macOS the first call may pop a Keychain permission prompt for `security` — click "Always Allow" once.
+- **Opt-out** — set `CLAUDE_STATUSLINE_USAGE_API=0` to disable the fetch entirely; the limits section then falls back to the stdin-provided windows.
+
+### Rate limit caching (fallback path)
+
+Claude Code only includes rate limit data in the statusline JSON when it receives fresh headers from the API. Without caching, the rate limit bars disappear between messages. This script persists the last known values to a temp file and shows a `(cached Xm ago)` label when displaying stale data, so the bars are always visible even when the usage endpoint is disabled or unreachable.
 
 ## Requirements
 
@@ -117,7 +129,7 @@ export CLAUDE_STATUSLINE_BG=light   # or: dark
 
 ### Compact mode
 
-Set `CLAUDE_STATUSLINE_COMPACT=1` to trim the line down to the essentials — model, plan, directory, branch + git status, the context bar, cost, and rate limits — hiding the many secondary badges (effort/thinking/fast/style/session/account/repo/PR, sparkline/runway/token breakdown, api-wait/velocities). Everything is still computed the same way; the optional segments are just hidden.
+Set `CLAUDE_STATUSLINE_COMPACT=1` to trim the line down to the essentials — model, plan, directory + worktree, branch + git status, the context bar, cost, and the usage-limit bars — hiding the many secondary badges (effort/thinking/fast/style/session/account/repo/PR, sparkline/runway/token breakdown, api-wait/velocities, and the "used"/reset annotations on the limit bars). Everything is still computed the same way; the optional segments are just hidden.
 
 ```bash
 export CLAUDE_STATUSLINE_COMPACT=1

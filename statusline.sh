@@ -20,6 +20,8 @@ VERSION=$(echo "$input"   | jq -r '.version // ""')
 VIM_MODE=$(echo "$input"  | jq -r '.vim.mode // empty')
 AGENT=$(echo "$input"     | jq -r '.agent.name // empty')
 WT_BRANCH=$(echo "$input" | jq -r '.worktree.branch // empty')
+WT_NAME=$(echo "$input"   | jq -r '.worktree.name // empty')
+PROJ_DIR=$(echo "$input"  | jq -r '.workspace.project_dir // empty')
 EFFORT=$(echo "$input"    | jq -r '.effort.level // empty')
 THINKING=$(echo "$input"  | jq -r '.thinking.enabled // empty')
 FAST_MODE=$(echo "$input" | jq -r '.fast_mode // empty')
@@ -60,6 +62,63 @@ if [ -n "$FIVE_HR" ] || [ -n "$SEVEN_DAY" ]; then
     > "$CACHE_FILE" 2>/dev/null
 elif [ -f "$CACHE_FILE" ]; then
   IFS=$'\t' read -r FIVE_HR FIVE_RST SEVEN_DAY SEVEN_RST CACHE_TS < "$CACHE_FILE"
+fi
+
+# ── claude.ai usage endpoint (accurate plan limits) ───────────────────────────
+# The stdin rate_limits block only ever carries the 5-hour session window and
+# the all-models weekly window. claude.ai's Usage panel additionally shows a
+# per-model weekly limit (e.g. "Fable") — that extra data comes from
+# GET /api/oauth/usage, the same endpoint the claude.ai settings page and the
+# CLI's /usage screen read. We fetch it here too so the statusline matches
+# claude.ai exactly: session / all-models weekly / per-model weekly / credits.
+#
+# Mechanics: the response is cached to a file and refreshed at most every
+# USAGE_TTL seconds, and the refresh happens in a DETACHED BACKGROUND job so
+# rendering never blocks on the network. The OAuth token is read from
+# .credentials.json (Linux) or the macOS Keychain, used for one HTTPS call to
+# api.anthropic.com, and never written to disk. Opt out entirely with
+# CLAUDE_STATUSLINE_USAGE_API=0 (falls back to the stdin-provided windows).
+USAGE_JSON=""
+USAGE_AGE=""
+if [ "${CLAUDE_STATUSLINE_USAGE_API:-1}" != "0" ]; then
+  USAGE_CACHE="${TMPDIR:-/tmp}/.claude_usage_$(id -u 2>/dev/null || echo 0)_$(basename "$_CLAUDE_CFG")"
+  _now=$(date +%s)
+  _mt=0
+  [ -f "$USAGE_CACHE" ] && _mt=$(stat -f %m "$USAGE_CACHE" 2>/dev/null || stat -c %Y "$USAGE_CACHE" 2>/dev/null || echo 0)
+  if [ $(( _now - _mt )) -ge "${CLAUDE_STATUSLINE_USAGE_TTL:-180}" ]; then
+    _lock="${USAGE_CACHE}.lock"
+    _lmt=0
+    [ -f "$_lock" ] && _lmt=$(stat -f %m "$_lock" 2>/dev/null || stat -c %Y "$_lock" 2>/dev/null || echo 0)
+    # A lock younger than 30s means another render is already refreshing.
+    if [ $(( _now - _lmt )) -ge 30 ]; then
+      touch "$_lock" 2>/dev/null
+      (
+        _tok=""
+        [ -f "$_CLAUDE_CFG/.credentials.json" ] \
+          && _tok=$(jq -r '.claudeAiOauth.accessToken // empty' "$_CLAUDE_CFG/.credentials.json" 2>/dev/null)
+        [ -z "$_tok" ] && command -v security >/dev/null 2>&1 \
+          && _tok=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
+                    | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
+        if [ -n "$_tok" ]; then
+          _resp=$(curl -sf -m 5 \
+                    -H "Authorization: Bearer $_tok" \
+                    -H "Content-Type: application/json" \
+                    -H "anthropic-beta: oauth-2025-04-20" \
+                    "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
+          if [ -n "$_resp" ] && printf '%s' "$_resp" | jq -e 'type == "object"' >/dev/null 2>&1; then
+            printf '%s' "$_resp" > "${USAGE_CACHE}.tmp" 2>/dev/null \
+              && mv -f "${USAGE_CACHE}.tmp" "$USAGE_CACHE" 2>/dev/null
+          fi
+        fi
+        rm -f "$_lock"
+      ) >/dev/null 2>&1 &
+      disown 2>/dev/null || true
+    fi
+  fi
+  if [ -f "$USAGE_CACHE" ]; then
+    USAGE_JSON=$(cat "$USAGE_CACHE" 2>/dev/null)
+    [ "$_mt" -gt 0 ] 2>/dev/null && USAGE_AGE=$(( _now - _mt ))
+  fi
 fi
 
 # ── account / plan ────────────────────────────────────────────────────────────
@@ -205,7 +264,7 @@ fmt_reset() {
   local now; now=$(date +%s)
   local diff=$(( epoch - now ))
   [ "$diff" -le 0 ] && echo "now" && return
-  local h=$(( diff / 3600 )) m=$(( (diff % 3600) / 60 ))
+  local d=$(( diff / 86400 )) h=$(( (diff % 86400) / 3600 )) m=$(( (diff % 3600) / 60 ))
   # Absolute wall-clock time the limit resets at — BSD (macOS) vs GNU date.
   local fmt='+%-I:%M%p'
   [ -n "$with_date" ] && fmt='+%a %-m/%-d %-I:%M%p'
@@ -214,7 +273,44 @@ fmt_reset() {
   clock=$(echo "$clock" | tr '[:upper:]' '[:lower:]')
   local clock_part=""
   [ -n "$clock" ] && clock_part=" (${clock})"
-  [ "$h" -gt 0 ] && printf '%dh%dm%s' "$h" "$m" "$clock_part" || printf '%dm%s' "$m" "$clock_part"
+  if   [ "$d" -gt 0 ]; then printf '%dd%dh%s' "$d" "$h" "$clock_part"
+  elif [ "$h" -gt 0 ]; then printf '%dh%dm%s' "$h" "$m" "$clock_part"
+  else                      printf '%dm%s' "$m" "$clock_part"
+  fi
+}
+
+# iso_to_epoch TS — accepts either epoch seconds (passed through) or an ISO-8601
+# string (what /api/oauth/usage returns) and prints unix epoch seconds.
+iso_to_epoch() {
+  local ts="${1:-}"
+  [ -z "$ts" ] || [ "$ts" = "null" ] && return
+  case "$ts" in
+    *[!0-9]*) ;;                      # not purely numeric → parse as ISO below
+    *) printf '%s' "$ts"; return ;;
+  esac
+  printf '%s' "$ts" | jq -Rr '
+    sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z")
+    | try (fromdateiso8601 | tostring) catch empty' 2>/dev/null
+}
+
+# abbrev_path PATH — $HOME → ~, and deep paths collapse to "~/…/parent/base"
+# so the directory segment stays readable without eating the whole line.
+abbrev_path() {
+  local p="${1:-}"
+  [ -z "$p" ] && return
+  case "$p" in
+    "$HOME")   printf '~'; return ;;
+    "$HOME"/*) p="~${p#"$HOME"}" ;;
+  esac
+  local IFS='/'
+  # shellcheck disable=SC2206
+  local parts=($p) n
+  n=${#parts[@]}
+  if [ "$n" -gt 4 ]; then
+    printf '%s/…/%s/%s' "${parts[0]}" "${parts[n-2]}" "${parts[n-1]}"
+  else
+    printf '%s' "$p"
+  fi
 }
 
 fmt_age() {
@@ -237,6 +333,21 @@ GIT_DIR=$(git -C "$DIR" rev-parse --git-dir 2>/dev/null)
 if [ -n "$GIT_DIR" ]; then
   BR=$(git -C "$DIR" -c core.useReplacement=false branch --show-current 2>/dev/null)
   [ -n "$WT_BRANCH" ] && BR="$WT_BRANCH"
+
+  # Worktree detection fallback: Claude Code passes .worktree.name for worktrees
+  # it manages, but any linked worktree has "/worktrees/" in its git-dir. The
+  # main repo root (for the 📂 segment) is the parent of the common git-dir.
+  if [ -z "$WT_NAME" ]; then
+    case "$GIT_DIR" in
+      */worktrees/*)
+        WT_NAME=$(basename "$(git -C "$DIR" rev-parse --show-toplevel 2>/dev/null)")
+        if [ -z "$PROJ_DIR" ] || [ "$PROJ_DIR" = "$DIR" ]; then
+          _common=$(git -C "$DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+          [ -n "$_common" ] && PROJ_DIR=$(dirname "$_common")
+        fi
+        ;;
+    esac
+  fi
 
   # A single porcelain call yields both upstream divergence and working-tree
   # state, so we summarise the repo right next to the branch name:
@@ -405,10 +516,22 @@ if [ -n "$COMPACT" ]; then
   SESSION_PART="" AGENT_PART="" VIM_PART="" ACCT_PART="" REPO_PART="" PR_PART=""
 fi
 
+# Directory segment: abbreviated path (~ for $HOME, deep paths collapsed).
+# Inside a worktree the 📂 shows the MAIN repo and a 🌳 badge names the
+# worktree, so "where am I" and "which copy" both read at a glance.
+WT_PART=""
+if [ -n "$WT_NAME" ]; then
+  DIR_LABEL=$(abbrev_path "${PROJ_DIR:-$DIR}")
+  WT_PART=" ${BOLD}${GREEN}🌳 ${WT_NAME}${RESET}"
+else
+  DIR_LABEL=$(abbrev_path "$DIR")
+fi
+[ -z "$DIR_LABEL" ] && DIR_LABEL="${DIR##*/}"
+
 # Assemble into a variable and print with a constant %b format so a literal '%'
 # in any dynamic value (model, session, dir, branch, account) isn't treated as
 # a printf format specifier.
-LINE1="${BOLD}${MODEL_COLOR}🤖 ${MODEL}${RESET}${MODELSW_PART}${VER_PART}${EFFORT_PART}${THINK_PART}${FAST_PART}${STYLE_PART}${SESSION_PART}${AGENT_PART}${VIM_PART}${ACCT_PART}${PLAN_PART}  ${BOLD}${BLUE}📂 ${DIR##*/}${RESET}${REPO_PART}${BRANCH}${PR_PART}"
+LINE1="${BOLD}${MODEL_COLOR}🤖 ${MODEL}${RESET}${MODELSW_PART}${VER_PART}${EFFORT_PART}${THINK_PART}${FAST_PART}${STYLE_PART}${SESSION_PART}${AGENT_PART}${VIM_PART}${ACCT_PART}${PLAN_PART}  ${BOLD}${BLUE}📂 ${DIR_LABEL}${RESET}${WT_PART}${REPO_PART}${BRANCH}${PR_PART}"
 printf '%b\n' "$LINE1"
 
 # ── line 2: context window bar + token counts ─────────────────────────────────
@@ -575,37 +698,110 @@ if [ -n "$COST_USD" ]; then
   printf "${BOLD}${GREEN}${COST_EMOJI} cost${RESET} ${BOLD}${YELLOW}$(fmt_usd "$COST_USD")${RESET}${LINES_PART}${LPH_PART}${DUR_PART}${API_PART}${VELO_PART}\n"
 fi
 
-# ── line 4: rate limits ───────────────────────────────────────────────────────
-if [ -n "$FIVE_HR" ] || [ -n "$SEVEN_DAY" ]; then
+# ── lines 4-5: plan usage limits (mirrors claude.ai's Usage panel) ───────────
+# Rows: "session" (5-hour window), "all models" (weekly), then one row per
+# model-scoped weekly limit (e.g. "Fable"), plus the usage-credits toggle —
+# the same rows, in the same order, as claude.ai › Settings › Usage.
+# Data source: the /api/oauth/usage snapshot when available (accurate + has
+# the model-scoped rows), otherwise the stdin five_hour/seven_day fallback.
+
+# render_limit COLOR LABEL PCT RESET_EPOCH [with_date] — one "<label> <bar> N%
+# used resets …" segment. Percent is floored like claude.ai does; the reset
+# and the "used" suffix are dropped in compact mode.
+render_limit() {
+  local lc="$1" lbl="$2" pct="$3" rst="$4" wd="${5:-}"
+  local p="${pct%%.*}"
+  case "$p" in ''|*[!0-9]*) p=0 ;; esac
+  local rc
+  if   [ "$p" -ge 90 ]; then rc="$RED"
+  elif [ "$p" -ge 70 ]; then rc="$YELLOW"
+  else rc="$GREEN"; fi
+  local bar; bar=$(make_bar "$p")
+  local used_part="" rp=""
+  if [ -z "$COMPACT" ]; then
+    used_part="${DIM} used${RESET}"
+    local r; r=$(fmt_reset "$rst" $wd)
+    [ -n "$r" ] && rp=" ${DIM}resets${RESET} ${r}"
+  fi
+  printf '%s' "${BOLD}${lc}${lbl}${RESET} ${bar}${RESET} ${BOLD}${rc}${p}%${RESET}${used_part}${rp}"
+}
+
+SES_PCT="" SES_RST="" WK_PCT="" WK_RST="" MODEL_ROWS="" CREDITS_PART=""
+if [ -n "$USAGE_JSON" ]; then
+  SES_PCT=$(jq -r '.five_hour.utilization // empty' <<<"$USAGE_JSON" 2>/dev/null)
+  SES_RST=$(iso_to_epoch "$(jq -r '.five_hour.resets_at // empty' <<<"$USAGE_JSON" 2>/dev/null)")
+  WK_PCT=$(jq -r '.seven_day.utilization // empty' <<<"$USAGE_JSON" 2>/dev/null)
+  WK_RST=$(iso_to_epoch "$(jq -r '.seven_day.resets_at // empty' <<<"$USAGE_JSON" 2>/dev/null)")
+
+  # Per-model weekly rows: the named model buckets plus the server-driven
+  # limits[] array (kind=weekly_scoped) that claude.ai renders as e.g. "Fable".
+  MODEL_ROWS=$(jq -r '
+    def row(name; w): w | select(. != null) | select(.utilization != null)
+      | [name, (.utilization | tostring), (.resets_at // "")] | @tsv;
+    (row("Opus";   .seven_day_opus)),
+    (row("Sonnet"; .seven_day_sonnet)),
+    (.limits[]?
+      | select(.kind == "weekly_scoped")
+      | select((.scope.model.display_name // "") != "")
+      | select(.percent != null)
+      | [.scope.model.display_name, (.percent | tostring), (.resets_at // "")] | @tsv)
+  ' <<<"$USAGE_JSON" 2>/dev/null)
+
+  # Usage-credits (extra usage) toggle, as shown at the bottom of the panel.
+  _cen=$(jq -r '.extra_usage.is_enabled // false' <<<"$USAGE_JSON" 2>/dev/null)
+  if [ "$_cen" = "true" ] && [ -z "$COMPACT" ]; then
+    _cut=$(jq -r '.extra_usage.utilization // empty' <<<"$USAGE_JSON" 2>/dev/null)
+    if [ -n "$_cut" ]; then
+      CREDITS_PART="  ${PINK}💳 credits ${_cut%%.*}%${RESET}"
+    else
+      CREDITS_PART="  ${PINK}💳 credits on${RESET}"
+    fi
+  fi
+fi
+
+# Fall back to the stdin-provided (or file-cached) windows when the usage
+# endpoint hasn't answered yet.
+FELL_BACK=""
+if [ -z "$SES_PCT" ] && [ -n "$FIVE_HR" ] && [ "$FIVE_HR" != "null" ]; then
+  SES_PCT="$FIVE_HR" SES_RST="$FIVE_RST" FELL_BACK=1
+fi
+if [ -z "$WK_PCT" ] && [ -n "$SEVEN_DAY" ] && [ "$SEVEN_DAY" != "null" ]; then
+  WK_PCT="$SEVEN_DAY" WK_RST="$SEVEN_RST" FELL_BACK=1
+fi
+
+if [ -n "$SES_PCT" ] || [ -n "$WK_PCT" ] || [ -n "$MODEL_ROWS" ]; then
+  # Freshness marker: fallback data shows the old "(cached Xm ago)" note;
+  # endpoint data only flags itself once it's gone noticeably stale (>10m).
   STALE_PART=""
-  if [ "$RATE_FRESH" -eq 0 ] && [ -n "$CACHE_TS" ]; then
-    AGE=$(fmt_age "$CACHE_TS")
-    STALE_PART=" ${DIM}(cached ${AGE} ago)${RESET}"
+  if [ -n "$FELL_BACK" ] && [ "$RATE_FRESH" -eq 0 ] && [ -n "$CACHE_TS" ]; then
+    STALE_PART=" ${DIM}(cached $(fmt_age "$CACHE_TS") ago)${RESET}"
+  elif [ -z "$FELL_BACK" ] && [ -n "$USAGE_AGE" ] && [ "$USAGE_AGE" -ge 600 ] 2>/dev/null; then
+    STALE_PART=" ${DIM}(as of $(( USAGE_AGE / 60 ))m ago)${RESET}"
   fi
 
-  RATE_LINE=""
-  if [ -n "$FIVE_HR" ] && [ "$FIVE_HR" != "null" ]; then
-    P=$(printf '%.0f' "$FIVE_HR" 2>/dev/null || echo 0)
-    if   [ "$P" -ge 90 ]; then RC="$RED"
-    elif [ "$P" -ge 70 ]; then RC="$YELLOW"
-    else RC="$GREEN"; fi
-    BAR5=$(make_bar "$P" "$RC")
-    RST5=$(fmt_reset "$FIVE_RST")
-    RST5_PART=""; [ -n "$RST5" ] && RST5_PART=" ${DIM}resets${RESET} ${RST5}"
-    RATE_LINE="${BOLD}${ORANGE}⚡ 5h${RESET} ${BAR5}${RESET} ${BOLD}${RC}${P}%${RESET}${RST5_PART}"
-  fi
+  SES_LINE=""
+  [ -n "$SES_PCT" ] && SES_LINE=$(render_limit "$ORANGE" "⚡ session" "$SES_PCT" "$SES_RST")
 
-  if [ -n "$SEVEN_DAY" ] && [ "$SEVEN_DAY" != "null" ]; then
-    P=$(printf '%.0f' "$SEVEN_DAY" 2>/dev/null || echo 0)
-    if   [ "$P" -ge 90 ]; then RC="$RED"
-    elif [ "$P" -ge 70 ]; then RC="$YELLOW"
-    else RC="$GREEN"; fi
-    BAR7=$(make_bar "$P" "$RC")
-    RST7=$(fmt_reset "$SEVEN_RST" with_date)
-    RST7_PART=""; [ -n "$RST7" ] && RST7_PART=" ${DIM}resets${RESET} ${RST7}"
-    [ -n "$RATE_LINE" ] && RATE_LINE="${RATE_LINE}  "
-    RATE_LINE="${RATE_LINE}${BOLD}${PINK}📅 7d${RESET} ${BAR7}${RESET} ${BOLD}${RC}${P}%${RESET}${RST7_PART}"
+  WEEK_LINE=""
+  [ -n "$WK_PCT" ] && WEEK_LINE=$(render_limit "$PINK" "📅 all models" "$WK_PCT" "$WK_RST" with_date)
+  if [ -n "$MODEL_ROWS" ]; then
+    _seen="|"
+    while IFS=$'\t' read -r _mn _mu _mr; do
+      [ -n "$_mn" ] && [ -n "$_mu" ] || continue
+      case "$_seen" in *"|${_mn}|"*) continue ;; esac   # dedupe by model name
+      _seen="${_seen}${_mn}|"
+      _mrow=$(render_limit "$PURPLE" "✨ ${_mn}" "$_mu" "$(iso_to_epoch "$_mr")" with_date)
+      [ -n "$WEEK_LINE" ] && WEEK_LINE="${WEEK_LINE}  "
+      WEEK_LINE="${WEEK_LINE}${_mrow}"
+    done <<< "$MODEL_ROWS"
   fi
+  WEEK_LINE="${WEEK_LINE}${CREDITS_PART}"
 
-  printf "%b%b\n" "$RATE_LINE" "$STALE_PART"
+  if [ -n "$SES_LINE" ] && [ -n "$WEEK_LINE" ]; then
+    printf '%b%b\n%b\n' "$SES_LINE" "$STALE_PART" "$WEEK_LINE"
+  elif [ -n "$SES_LINE" ]; then
+    printf '%b%b\n' "$SES_LINE" "$STALE_PART"
+  elif [ -n "$WEEK_LINE" ]; then
+    printf '%b%b\n' "$WEEK_LINE" "$STALE_PART"
+  fi
 fi

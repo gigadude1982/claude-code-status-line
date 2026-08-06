@@ -72,9 +72,12 @@ fi
 # CLI's /usage screen read. We fetch it here too so the statusline matches
 # claude.ai exactly: session / all-models weekly / per-model weekly / credits.
 #
-# Mechanics: the response is cached to a file and refreshed at most every
-# USAGE_TTL seconds, and the refresh happens in a DETACHED BACKGROUND job so
-# rendering never blocks on the network. The OAuth token is read from
+# Mechanics: the response is cached to a file, and a detached BACKGROUND
+# refresher keeps that cache warm on a timer, so rendering never blocks on the
+# network and draws the freshest snapshot available. It is best-effort, not a
+# guarantee — before the first fetch lands, while the endpoint is failing, or
+# with the refresher off, the cache can still lag; the rows say so once they're
+# noticeably behind. The OAuth token is read from
 # .credentials.json (Linux) or the macOS Keychain, used for one HTTPS call to
 # api.anthropic.com, and never written to disk. Opt out entirely with
 # CLAUDE_STATUSLINE_USAGE_API=0 (falls back to the stdin-provided windows).
@@ -82,42 +85,128 @@ USAGE_JSON=""
 USAGE_AGE=""
 if [ "${CLAUDE_STATUSLINE_USAGE_API:-1}" != "0" ]; then
   USAGE_CACHE="${TMPDIR:-/tmp}/.claude_usage_$(id -u 2>/dev/null || echo 0)_$(basename "$_CLAUDE_CFG")"
+  USAGE_BEAT="${USAGE_CACHE}.beat"
+  USAGE_PID="${USAGE_CACHE}.pid"
+
+  # mtime of $1 as epoch seconds (0 when absent) — BSD (macOS) vs GNU stat.
+  _mtime() {
+    [ -f "$1" ] || { echo 0; return; }
+    stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0
+  }
+
+  # One refresh: read the OAuth token, GET the usage snapshot, and swap it into
+  # the cache atomically so a reader never sees a half-written file.
+  _usage_fetch() {
+    local _tok="" _resp="" _tmp=""
+    [ -f "$_CLAUDE_CFG/.credentials.json" ] \
+      && _tok=$(jq -r '.claudeAiOauth.accessToken // empty' "$_CLAUDE_CFG/.credentials.json" 2>/dev/null)
+    [ -z "$_tok" ] && command -v security >/dev/null 2>&1 \
+      && _tok=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
+                | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
+    [ -n "$_tok" ] || return 1
+    _resp=$(curl -sf -m 5 \
+              -H "Authorization: Bearer $_tok" \
+              -H "Content-Type: application/json" \
+              -H "anthropic-beta: oauth-2025-04-20" \
+              "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
+    [ -n "$_resp" ] && printf '%s' "$_resp" | jq -e 'type == "object"' >/dev/null 2>&1 || return 1
+    # Stage through mktemp rather than a predictable "$USAGE_CACHE.tmp": on a
+    # shared /tmp that name is guessable, so someone else could pre-plant a
+    # symlink and have us clobber its target (or squat the name to block
+    # updates). mktemp also gives us 0600 without racing a chmod.
+    _tmp=$(mktemp "${USAGE_CACHE}.XXXXXX" 2>/dev/null) || return 1
+    if printf '%s' "$_resp" > "$_tmp" 2>/dev/null; then
+      mv -f "$_tmp" "$USAGE_CACHE" 2>/dev/null && return 0
+    fi
+    rm -f "$_tmp" 2>/dev/null
+    return 1
+  }
+
   _now=$(date +%s)
-  _mt=0
-  [ -f "$USAGE_CACHE" ] && _mt=$(stat -f %m "$USAGE_CACHE" 2>/dev/null || stat -c %Y "$USAGE_CACHE" 2>/dev/null || echo 0)
-  if [ $(( _now - _mt )) -ge "${CLAUDE_STATUSLINE_USAGE_TTL:-180}" ]; then
+  # Heartbeat: every render stamps this. The refresher watches it to know when
+  # Claude Code has gone away and it should retire.
+  touch "$USAGE_BEAT" 2>/dev/null
+
+  # ── background refresher ────────────────────────────────────────────────────
+  # Claude Code only runs the statusline when session state changes, so on its
+  # own the usage cache would only ever be refreshed by the render that noticed
+  # it had expired — meaning the meters show the previous snapshot and catch up
+  # a render late. A single detached refresher (one per uid + config dir, so
+  # every session, pane and worktree shares it) re-fetches on a fixed interval
+  # instead, keeping a current snapshot on disk for whenever a render happens.
+  # It exits once no session has rendered for CLAUDE_STATUSLINE_USAGE_IDLE
+  # seconds, so it never outlives Claude Code. Set
+  # CLAUDE_STATUSLINE_USAGE_DAEMON=0 for the old refresh-on-render behaviour.
+  _daemon=0
+  if [ "${CLAUDE_STATUSLINE_USAGE_DAEMON:-1}" != "0" ]; then
+    _dp=$(cat "$USAGE_PID" 2>/dev/null)
+    case "$_dp" in ''|*[!0-9]*) _dp=0 ;; esac
+    if [ "$_dp" -gt 0 ] && kill -0 "$_dp" 2>/dev/null; then
+      _daemon=1
+    else
+      rm -f "$USAGE_PID" 2>/dev/null
+      (
+        # Our own pid. $BASHPID doesn't exist in bash 3.2 (what macOS ships as
+        # /bin/bash), so fall back to asking a child for its parent.
+        _bp="${BASHPID:-$(exec sh -c 'echo $PPID')}"
+        # Claim the slot atomically: under noclobber only one of several racing
+        # renders can create the pid file; the losers exit immediately.
+        set -C
+        printf '%s\n' "$_bp" > "$USAGE_PID" 2>/dev/null || exit 0
+        set +C
+        # Release the claim on the way out, but only if we still hold it.
+        trap '[ "$(cat "$USAGE_PID" 2>/dev/null)" = "$_bp" ] && rm -f "$USAGE_PID"' EXIT INT TERM
+        _fails=0
+        while :; do
+          if _usage_fetch; then _fails=0
+          elif [ "$_fails" -lt 4 ]; then _fails=$(( _fails + 1 ))
+          fi
+          # Back off when the fetch keeps failing — the endpoint itself rate-
+          # limits, and polling it harder is the wrong answer. Doubles per
+          # failure (1x, 2x, 4x, 8x, 16x the interval), capped at 15 minutes.
+          _wait=$(( ${CLAUDE_STATUSLINE_USAGE_INTERVAL:-60} << _fails ))
+          [ "$_wait" -gt 900 ] && _wait=900
+          sleep "$_wait"
+          # Stand down if another refresher has taken the claim, so a lost race
+          # can't leave two of us fetching.
+          [ "$(cat "$USAGE_PID" 2>/dev/null)" = "$_bp" ] || break
+          # Retire once no session has rendered for a while.
+          [ $(( $(date +%s) - $(_mtime "$USAGE_BEAT") )) \
+            -ge "${CLAUDE_STATUSLINE_USAGE_IDLE:-1800}" ] && break
+        done
+      ) >/dev/null 2>&1 &
+      disown 2>/dev/null || true
+      _daemon=1
+    fi
+  fi
+
+  # Refresh-on-render path — the only refresh when the daemon is disabled, and
+  # a safety net when it isn't. The generous ttl in that case sits above the
+  # refresher's longest backoff, so we don't pile onto an endpoint it's already
+  # backing off from; it only fires if the refresher died without cleaning up
+  # its pid file and that pid got recycled by an unrelated process.
+  _mt=$(_mtime "$USAGE_CACHE")
+  _ttl="${CLAUDE_STATUSLINE_USAGE_TTL:-180}"
+  [ "$_daemon" -eq 1 ] && _ttl=1200
+  if [ $(( _now - _mt )) -ge "$_ttl" ]; then
     _lock="${USAGE_CACHE}.lock"
-    _lmt=0
-    [ -f "$_lock" ] && _lmt=$(stat -f %m "$_lock" 2>/dev/null || stat -c %Y "$_lock" 2>/dev/null || echo 0)
+    _lmt=$(_mtime "$_lock")
     # A lock younger than 30s means another render is already refreshing.
     if [ $(( _now - _lmt )) -ge 30 ]; then
       touch "$_lock" 2>/dev/null
-      (
-        _tok=""
-        [ -f "$_CLAUDE_CFG/.credentials.json" ] \
-          && _tok=$(jq -r '.claudeAiOauth.accessToken // empty' "$_CLAUDE_CFG/.credentials.json" 2>/dev/null)
-        [ -z "$_tok" ] && command -v security >/dev/null 2>&1 \
-          && _tok=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
-                    | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
-        if [ -n "$_tok" ]; then
-          _resp=$(curl -sf -m 5 \
-                    -H "Authorization: Bearer $_tok" \
-                    -H "Content-Type: application/json" \
-                    -H "anthropic-beta: oauth-2025-04-20" \
-                    "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
-          if [ -n "$_resp" ] && printf '%s' "$_resp" | jq -e 'type == "object"' >/dev/null 2>&1; then
-            printf '%s' "$_resp" > "${USAGE_CACHE}.tmp" 2>/dev/null \
-              && mv -f "${USAGE_CACHE}.tmp" "$USAGE_CACHE" 2>/dev/null
-          fi
-        fi
-        rm -f "$_lock"
-      ) >/dev/null 2>&1 &
+      ( _usage_fetch; rm -f "$_lock" ) >/dev/null 2>&1 &
       disown 2>/dev/null || true
     fi
   fi
+
   if [ -f "$USAGE_CACHE" ]; then
     USAGE_JSON=$(cat "$USAGE_CACHE" 2>/dev/null)
-    [ "$_mt" -gt 0 ] 2>/dev/null && USAGE_AGE=$(( _now - _mt ))
+    # Re-stat: the refresher may have replaced the file mid-render.
+    _mt=$(_mtime "$USAGE_CACHE")
+    if [ "$_mt" -gt 0 ] 2>/dev/null; then
+      USAGE_AGE=$(( _now - _mt ))
+      [ "$USAGE_AGE" -lt 0 ] && USAGE_AGE=0   # refreshed after this render started
+    fi
   fi
 fi
 
@@ -760,13 +849,14 @@ if [ -n "$USAGE_JSON" ]; then
 fi
 
 # Fall back to the stdin-provided (or file-cached) windows when the usage
-# endpoint hasn't answered yet.
+# endpoint hasn't answered yet. Those resets arrive as ISO-8601 strings, so
+# normalise them to epoch seconds — fmt_reset does arithmetic on the value.
 FELL_BACK=""
 if [ -z "$SES_PCT" ] && [ -n "$FIVE_HR" ] && [ "$FIVE_HR" != "null" ]; then
-  SES_PCT="$FIVE_HR" SES_RST="$FIVE_RST" FELL_BACK=1
+  SES_PCT="$FIVE_HR" SES_RST=$(iso_to_epoch "$FIVE_RST") FELL_BACK=1
 fi
 if [ -z "$WK_PCT" ] && [ -n "$SEVEN_DAY" ] && [ "$SEVEN_DAY" != "null" ]; then
-  WK_PCT="$SEVEN_DAY" WK_RST="$SEVEN_RST" FELL_BACK=1
+  WK_PCT="$SEVEN_DAY" WK_RST=$(iso_to_epoch "$SEVEN_RST") FELL_BACK=1
 fi
 
 if [ -n "$SES_PCT" ] || [ -n "$WK_PCT" ] || [ -n "$MODEL_ROWS" ]; then

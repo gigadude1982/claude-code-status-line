@@ -1,4 +1,4 @@
-# claude-status-line
+# claude-code-status-line
 
 A vibrant, information-dense statusline for [Claude Code](https://claude.ai/code) — model, live toggles, context usage, cost, git status, and rate limits, rendered with a neon 256-color palette and emoji glyphs.
 
@@ -31,6 +31,7 @@ A vibrant, information-dense statusline for [Claude Code](https://claude.ai/code
 **Lines 4–5 — plan usage limits (mirrors claude.ai › Settings › Usage)**
 - ⚡ **session** (5-hour window) · 📅 **all models** (weekly) · ✨ **per-model weekly** rows (e.g. *Fable*) · 💳 **usage credits** toggle
 - the same rows, values, and floor-rounded percentages as claude.ai's Usage panel, with gradient bars and reset countdowns (weekly resets show days + the absolute day/time, e.g. `5d18h (sun 8/9 3:00am)`)
+- kept current by a [background refresher](#usage-meter-refresh) rather than only being fetched when a render notices the cache expired
 
 ### Git status
 
@@ -88,8 +89,8 @@ Claude Code only includes rate limit data in the statusline JSON when it receive
 ## Installation
 
 ```bash
-git clone git@github.com:gigadude1982/claude-status-line.git
-cd claude-status-line
+git clone git@github.com:gigadude1982/claude-code-status-line.git
+cd claude-code-status-line
 bash install.sh
 ```
 
@@ -126,6 +127,24 @@ Labels/secondary text render **white on dark** backgrounds and **grey on light**
 ```bash
 export CLAUDE_STATUSLINE_BG=light   # or: dark
 ```
+
+### Usage-meter refresh
+
+The usage rows come from `GET /api/oauth/usage`, cached to a temp file. A small **background refresher** re-fetches that cache on a timer and keeps it warm, so a render always has a current snapshot to draw.
+
+Worth being precise about what this does and doesn't fix. Claude Code runs the statusline command only when session state changes — it has no idle timer — so nothing the script does can make the *drawn* line repaint while a pane sits idle. What the refresher removes is the staleness: previously the snapshot was only re-fetched by a render that noticed the cache had expired, and that fetch landed a render *late*, so the meters showed the previous snapshot and caught up one render behind. Now the first render after an idle pane wakes up (a keystroke is enough) draws numbers that are seconds old rather than minutes.
+
+One refresher runs per uid + config dir, shared by every session, pane and worktree — so a grid of sessions costs one poller, not one per pane. It claims a pid file atomically, stands down if another instance takes over, retires once no session has rendered for `USAGE_IDLE` seconds, and backs off exponentially (up to 15 min) when the endpoint fails, since that endpoint rate-limits and polling it harder is the wrong answer.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `CLAUDE_STATUSLINE_USAGE_DAEMON` | `1` | Set `0` for the old refresh-on-render behaviour |
+| `CLAUDE_STATUSLINE_USAGE_INTERVAL` | `60` | Seconds between refreshes |
+| `CLAUDE_STATUSLINE_USAGE_IDLE` | `1800` | Retire after this long with no render from any session |
+| `CLAUDE_STATUSLINE_USAGE_TTL` | `180` | Cache lifetime for the refresh-on-render path (used when the refresher is off) |
+| `CLAUDE_STATUSLINE_USAGE_API` | `1` | Set `0` to skip the endpoint entirely and use only the windows Claude Code sends on stdin |
+
+If the snapshot does go stale — endpoint down, or credits exhausted and the endpoint rate-limiting — the rows say so with an `(as of Xm ago)` note rather than quietly showing old numbers.
 
 ### Compact mode
 

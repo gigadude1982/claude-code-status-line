@@ -134,7 +134,7 @@ The usage rows come from `GET /api/oauth/usage`, cached to a temp file. A small 
 
 Worth being precise about what this does and doesn't fix. Claude Code runs the statusline command only when session state changes — it has no idle timer — so nothing the script does can make the *drawn* line repaint while a pane sits idle. What the refresher removes is the staleness: previously the snapshot was only re-fetched by a render that noticed the cache had expired, and that fetch landed a render *late*, so the meters showed the previous snapshot and caught up one render behind. Now the first render after an idle pane wakes up (a keystroke is enough) draws numbers that are seconds old rather than minutes.
 
-One refresher runs per uid + config dir, shared by every session, pane and worktree — so a grid of sessions costs one poller, not one per pane. It claims a pid file atomically, stands down if another instance takes over, retires once no session has rendered for `USAGE_IDLE` seconds, and backs off exponentially (up to 15 min) when the endpoint fails, since that endpoint rate-limits and polling it harder is the wrong answer.
+One refresher runs per uid + config dir, shared by every session, pane and worktree — so a grid of sessions costs one poller, not one per pane. It claims a pid file atomically, stands down if another instance takes over, retires once no session has rendered for `CLAUDE_STATUSLINE_USAGE_IDLE` seconds, and backs off exponentially (up to 15 min) when the endpoint fails, since that endpoint rate-limits and polling it harder is the wrong answer.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|

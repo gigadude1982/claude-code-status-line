@@ -74,7 +74,10 @@ fi
 #
 # Mechanics: the response is cached to a file, and a detached BACKGROUND
 # refresher keeps that cache warm on a timer, so rendering never blocks on the
-# network and never draws a stale snapshot. The OAuth token is read from
+# network and draws the freshest snapshot available. It is best-effort, not a
+# guarantee — before the first fetch lands, while the endpoint is failing, or
+# with the refresher off, the cache can still lag; the rows say so once they're
+# noticeably behind. The OAuth token is read from
 # .credentials.json (Linux) or the macOS Keychain, used for one HTTPS call to
 # api.anthropic.com, and never written to disk. Opt out entirely with
 # CLAUDE_STATUSLINE_USAGE_API=0 (falls back to the stdin-provided windows).
@@ -94,7 +97,7 @@ if [ "${CLAUDE_STATUSLINE_USAGE_API:-1}" != "0" ]; then
   # One refresh: read the OAuth token, GET the usage snapshot, and swap it into
   # the cache atomically so a reader never sees a half-written file.
   _usage_fetch() {
-    local _tok="" _resp=""
+    local _tok="" _resp="" _tmp=""
     [ -f "$_CLAUDE_CFG/.credentials.json" ] \
       && _tok=$(jq -r '.claudeAiOauth.accessToken // empty' "$_CLAUDE_CFG/.credentials.json" 2>/dev/null)
     [ -z "$_tok" ] && command -v security >/dev/null 2>&1 \
@@ -107,8 +110,16 @@ if [ "${CLAUDE_STATUSLINE_USAGE_API:-1}" != "0" ]; then
               -H "anthropic-beta: oauth-2025-04-20" \
               "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
     [ -n "$_resp" ] && printf '%s' "$_resp" | jq -e 'type == "object"' >/dev/null 2>&1 || return 1
-    printf '%s' "$_resp" > "${USAGE_CACHE}.tmp" 2>/dev/null \
-      && mv -f "${USAGE_CACHE}.tmp" "$USAGE_CACHE" 2>/dev/null
+    # Stage through mktemp rather than a predictable "$USAGE_CACHE.tmp": on a
+    # shared /tmp that name is guessable, so someone else could pre-plant a
+    # symlink and have us clobber its target (or squat the name to block
+    # updates). mktemp also gives us 0600 without racing a chmod.
+    _tmp=$(mktemp "${USAGE_CACHE}.XXXXXX" 2>/dev/null) || return 1
+    if printf '%s' "$_resp" > "$_tmp" 2>/dev/null; then
+      mv -f "$_tmp" "$USAGE_CACHE" 2>/dev/null && return 0
+    fi
+    rm -f "$_tmp" 2>/dev/null
+    return 1
   }
 
   _now=$(date +%s)

@@ -289,6 +289,20 @@ esac
 COMPACT="${CLAUDE_STATUSLINE_COMPACT:-}"
 [ "$COMPACT" = "0" ] || [ "$COMPACT" = "false" ] && COMPACT=""
 
+# ── grid pairing: adopt the tmux session's theme accent ───────────────────────
+# claude-code-grid themes are session-scoped and park their accent in the
+# @theme_accent session option. When this pane sits in a themed session, the
+# statusline's headline colors (model name, ctx label, dir) follow it, so the
+# pane's status bar and the grid chrome read as one system. Off-grid — no
+# tmux, no theme — nothing changes. Opt out: CLAUDE_STATUSLINE_THEME_SYNC=0.
+GRID_ACCENT=""
+if [ -n "${TMUX_PANE:-}" ] && [ "${CLAUDE_STATUSLINE_THEME_SYNC:-1}" != "0" ]; then
+  _acc=$(tmux show-options -v -t "$TMUX_PANE" @theme_accent 2>/dev/null)
+  case "$_acc" in
+    colour[0-9]*) GRID_ACCENT="\033[38;5;${_acc#colour}m" ;;
+  esac
+fi
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 # make_spark PCT... — renders a sparkline from a series of integer percentages,
 # each glyph sized by its value and coloured with the same green→red ramp as the
@@ -567,6 +581,8 @@ case "$MODEL" in
   *[Ss]onnet*) MODEL_COLOR="$CYAN" ;;
   *[Hh]aiku*)  MODEL_COLOR="$GREEN" ;;
 esac
+# A grid theme outranks the family personality — the whole pane matches.
+[ -n "$GRID_ACCENT" ] && MODEL_COLOR="$GRID_ACCENT"
 
 # Model-switch breadcrumb: remember the distinct models used this session (as a
 # '|'-separated list in a per-session temp file) and show where we switched
@@ -733,7 +749,9 @@ if [ -n "$USED_PCT" ]; then
   [ -n "$COMPACT" ] && { SPARK_PART="" RUNWAY_PART="" TOK_DETAIL=""; }
   # Assemble and print with a constant %b format so a literal '%' in any dynamic
   # segment (e.g. the cache-hit badge) isn't treated as a printf format spec.
-  LINE2="${BOLD}${PURPLE}${CTX_EMOJI} ctx${RESET} ${BAR}${RESET} ${BOLD}${BAR_COLOR}${PCT}%${RESET} ${DIM}rem:${RESET}${GREEN}${REM}%${RESET}${SPARK_PART}${RUNWAY_PART}${TOK_DETAIL} ${DIM}ctx:${RESET}${CYAN}${CTX_K}${RESET}${EXCEED_PART}"
+  CTX_LABEL="${PURPLE}"
+  [ -n "$GRID_ACCENT" ] && CTX_LABEL="$GRID_ACCENT"
+  LINE2="${BOLD}${CTX_LABEL}${CTX_EMOJI} ctx${RESET} ${BAR}${RESET} ${BOLD}${BAR_COLOR}${PCT}%${RESET} ${DIM}rem:${RESET}${GREEN}${REM}%${RESET}${SPARK_PART}${RUNWAY_PART}${TOK_DETAIL} ${DIM}ctx:${RESET}${CYAN}${CTX_K}${RESET}${EXCEED_PART}"
   printf '%b\n' "$LINE2"
 else
   printf "${PURPLE}🧠 ${DIM}ctx: waiting for first message…${RESET}\n"
@@ -893,5 +911,39 @@ if [ -n "$SES_PCT" ] || [ -n "$WK_PCT" ] || [ -n "$MODEL_ROWS" ]; then
     printf '%b%b\n' "$SES_LINE" "$STALE_PART"
   elif [ -n "$WEEK_LINE" ]; then
     printf '%b%b\n' "$WEEK_LINE" "$STALE_PART"
+  fi
+fi
+
+# ── grid pairing: stamp per-pane stats for claude-code-grid ───────────────────
+# The grid renders per-repo cost, burn rate, a model badge and context
+# pressure in its pane borders and title-line dots — from the @cl_* pane
+# options stamped here. Grid panes only (@repo set), after render so the
+# visible line never waits on it, and throttled through a per-pane state
+# file so unchanged values cost zero tmux calls.
+if [ -n "${TMUX_PANE:-}" ]; then
+  _repo=$(tmux display-message -p -t "$TMUX_PANE" '#{@repo}' 2>/dev/null)
+  if [ -n "$_repo" ]; then
+    # "Fable 5" → F5, "Opus 4.8" → O4.8 — first letter plus version.
+    _badge=""
+    [ "$MODEL" != "unknown" ] && _badge=$(printf '%s' "$MODEL" \
+      | awk '{ v=$NF; if (v+0 > 0) printf "%s%s", substr($1,1,1), v }')
+    _cost=""
+    [ -n "$COST_USD" ] && [ "$COST_USD" != "null" ] && _cost=$(printf '%.2f' "$COST_USD" 2>/dev/null)
+    _crate=""
+    if [ -n "$COST_USD" ] && [ -n "$DUR_MS" ] && [ "$DUR_MS" -gt 60000 ] 2>/dev/null; then
+      _crate=$(awk -v c="$COST_USD" -v d="$DUR_MS" 'BEGIN{ printf "%.0f", c*3600000/d }' 2>/dev/null)
+    fi
+    _ctxrem=""
+    [ -n "$REM_PCT" ] && [ "$REM_PCT" != "null" ] && _ctxrem=$(printf '%.0f' "$REM_PCT" 2>/dev/null)
+
+    _stamp="${_badge}|${_cost}|${_crate}|${_ctxrem}"
+    _sfile="${TMPDIR:-/tmp}/.claude_grid_$(id -u 2>/dev/null || echo 0)_${TMUX_PANE#\%}"
+    if [ "$_stamp" != "$(cat "$_sfile" 2>/dev/null)" ]; then
+      printf '%s' "$_stamp" > "$_sfile" 2>/dev/null
+      tmux set-option -p -t "$TMUX_PANE" @cl_model "$_badge" \; \
+           set-option -p -t "$TMUX_PANE" @cl_cost  "$_cost"  \; \
+           set-option -p -t "$TMUX_PANE" @cl_rate  "$_crate" \; \
+           set-option -p -t "$TMUX_PANE" @cl_ctx   "$_ctxrem" 2>/dev/null
+    fi
   fi
 fi

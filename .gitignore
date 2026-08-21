@@ -1,0 +1,4 @@
+# Claude Code's per-project scratch: auto-created worktrees live here.
+# If a tracked settings.json or agent ever belongs in-repo, un-ignore it
+# explicitly (e.g. !.claude/settings.json) rather than dropping this line.
+.claude/

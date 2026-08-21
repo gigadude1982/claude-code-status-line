@@ -937,7 +937,19 @@ if [ -n "${TMUX_PANE:-}" ]; then
     [ -n "$REM_PCT" ] && [ "$REM_PCT" != "null" ] && _ctxrem=$(printf '%.0f' "$REM_PCT" 2>/dev/null)
 
     _stamp="${_badge}|${_cost}|${_crate}|${_ctxrem}"
-    _sfile="${TMPDIR:-/tmp}/.claude_grid_$(id -u 2>/dev/null || echo 0)_${TMUX_PANE#\%}"
+    # Key the throttle on the tmux SERVER as well as the pane. Pane ids are
+    # unique per server, not across them, so a second server — a test rig, a
+    # grid on its own -L socket — also hands out %1, %2, … and its identical
+    # stamp reads as "unchanged" here. The set-option calls get skipped and
+    # that pane silently loses its badge, its share of the Σ chip and its
+    # context dot, with nothing logged anywhere.
+    #
+    # The server pid (from $TMUX, which is socket,pid,session) also turns
+    # over when the server restarts, which is what we want: a fresh server
+    # starts with @cl_* unset, so a file left by the old one must not
+    # convince us there is nothing to write.
+    _srv=$(printf '%s' "${TMUX:-}" | cut -d, -f2)
+    _sfile="${TMPDIR:-/tmp}/.claude_grid_$(id -u 2>/dev/null || echo 0)_${_srv:-0}_${TMUX_PANE#\%}"
     if [ "$_stamp" != "$(cat "$_sfile" 2>/dev/null)" ]; then
       printf '%s' "$_stamp" > "$_sfile" 2>/dev/null
       tmux set-option -p -t "$TMUX_PANE" @cl_model "$_badge" \; \

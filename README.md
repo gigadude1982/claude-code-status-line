@@ -7,7 +7,7 @@ A vibrant, information-dense statusline for [Claude Code](https://claude.ai/code
 ## What it shows
 
 **Line 1 — identity & live state**
-- 🤖 **model**, tinted by family (Opus = violet, Sonnet = cyan, Haiku = green) + version
+- 🤖 **model**, tinted by family (Fable = pink, Mythos = yellow, Opus = violet, Sonnet = cyan, Haiku = green) + version
 - ↩ **model-switch breadcrumb** — the model you switched from, once you change mid-session
 - **effort badge** tracking `/effort`: 🐢 low · ⚙️ medium · ⚡ high · 🔥 xhigh · 🚀 max
 - 💭 **thinking** (when extended thinking is on) · 🏎️ **fast** (when `/fast` is engaged)

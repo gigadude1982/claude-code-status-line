@@ -599,8 +599,12 @@ REPO_PART=""
   && REPO_PART=" ${DIM}(${RESET}${CYAN}${REPO_OWNER}/${REPO_NAME}${RESET}${DIM})${RESET}"
 
 # Give each model family its own accent colour so the robot has a personality.
+# Fable/Mythos (the Claude 5 top tier) get their own tints so they don't read
+# as Sonnet; anything unrecognised keeps the neutral default.
 MODEL_COLOR="$CYAN"
 case "$MODEL" in
+  *[Ff]able*)  MODEL_COLOR="$PINK" ;;
+  *[Mm]ythos*) MODEL_COLOR="$YELLOW" ;;
   *[Oo]pus*)   MODEL_COLOR="$PURPLE" ;;
   *[Ss]onnet*) MODEL_COLOR="$CYAN" ;;
   *[Hh]aiku*)  MODEL_COLOR="$GREEN" ;;

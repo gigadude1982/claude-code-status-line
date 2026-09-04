@@ -269,6 +269,11 @@ MAGENTA='\033[38;5;201m'  # hot pink/magenta
 ORANGE='\033[38;5;208m'   # bright orange
 PURPLE='\033[38;5;141m'   # soft violet
 PINK='\033[38;5;213m'     # bubblegum pink
+# Model-tier metals: the family ladder reads bronze → gold → platinum.
+BRONZE='\033[38;5;172m'   # amber-brown
+GOLD='\033[38;5;220m'     # xterm "gold1"
+PLATINUM='\033[38;5;189m' # cool pale silver (not plain white — labels use 255)
+ICE='\033[38;5;159m'      # icier platinum, for Fable's sibling
 BOLD='\033[1m'; RESET='\033[0m'
 
 # "DIM" is the colour of labels / secondary text. We want it WHITE on a dark
@@ -599,14 +604,16 @@ REPO_PART=""
   && REPO_PART=" ${DIM}(${RESET}${CYAN}${REPO_OWNER}/${REPO_NAME}${RESET}${DIM})${RESET}"
 
 # Give each model family its own accent colour so the robot has a personality.
-# Fable/Mythos (the Claude 5 top tier) get their own tints so they don't read
-# as Sonnet; anything unrecognised keeps the neutral default.
+# The tiers follow a medal ladder — Sonnet bronze, Opus gold, Fable platinum —
+# so the colour alone says how high up the range you are. Mythos is the same
+# model as Fable (the ungated build), so it gets a sibling icy platinum rather
+# than a new colour. Haiku stays green; anything unrecognised keeps cyan.
 MODEL_COLOR="$CYAN"
 case "$MODEL" in
-  *[Ff]able*)  MODEL_COLOR="$PINK" ;;
-  *[Mm]ythos*) MODEL_COLOR="$YELLOW" ;;
-  *[Oo]pus*)   MODEL_COLOR="$PURPLE" ;;
-  *[Ss]onnet*) MODEL_COLOR="$CYAN" ;;
+  *[Ff]able*)  MODEL_COLOR="$PLATINUM" ;;
+  *[Mm]ythos*) MODEL_COLOR="$ICE" ;;
+  *[Oo]pus*)   MODEL_COLOR="$GOLD" ;;
+  *[Ss]onnet*) MODEL_COLOR="$BRONZE" ;;
   *[Hh]aiku*)  MODEL_COLOR="$GREEN" ;;
 esac
 # A grid theme outranks the family personality — the whole pane matches.

@@ -486,7 +486,10 @@ WT_MAIN=""
 GIT_DIR=$(git -C "$DIR" rev-parse --git-dir 2>/dev/null)
 if [ -n "$GIT_DIR" ]; then
   BR=$(git -C "$DIR" -c core.useReplacement=false branch --show-current 2>/dev/null)
-  [ -n "$WT_BRANCH" ] && BR="$WT_BRANCH"
+  # .worktree.branch is the branch Claude Code created the worktree on and
+  # goes stale after a checkout, so git's live answer wins; the stdin value
+  # only fills in when git has none (detached HEAD).
+  [ -z "$BR" ] && [ -n "$WT_BRANCH" ] && BR="$WT_BRANCH"
 
   # Worktree detection: Claude Code passes .worktree.name for worktrees it
   # manages, and any linked worktree has "/worktrees/" in its git-dir. The 📂

@@ -37,9 +37,23 @@ done
 echo "${h# }" > "${TMPDIR}.claude_spark2_$(id -u)_${SID}"
 printf '%s' "Claude Opus 5.5" > "${TMPDIR}.claude_sparkmdl_$(id -u)_${SID}"
 
+# Turn cost: a transcript whose latest prompt matches a seeded baseline, so the
+# render shows a mid-session turn rather than the "first sight" blank.
+TRANSCRIPT="$ROOT/transcript.jsonl"
+echo '{"type":"user","uuid":"demo-prompt-7","message":{"content":"add the warp drive"}}' > "$TRANSCRIPT"
+echo "demo-prompt-7 7.06 7.30" > "${TMPDIR}.claude_turncost_$(id -u)_${SID}"
+
+# CI badge: a stub gh that always reports passing checks, so the render never
+# talks to GitHub (or depends on gh being installed and logged in).
+mkdir -p "$ROOT/bin"
+printf '#!/bin/sh\necho '"'"'[{"bucket":"pass"}]'"'"'\n' > "$ROOT/bin/gh"
+chmod +x "$ROOT/bin/gh"
+export PATH="$ROOT/bin:$PATH"
+echo "$(date +%s) pass" > "${TMPDIR}.claude_ci_$(id -u)_acme_rocket-app_128"
+
 json() {
   cat <<EOF
-{"session_id":"$SID","session_name":"warp-drive","version":"2.4.12",
+{"session_id":"$SID","session_name":"warp-drive","version":"2.4.12","transcript_path":"$TRANSCRIPT",
  "model":{"display_name":"Fable 5.1"},
  "workspace":{"current_dir":"$REPO","project_dir":"$REPO","repo":{"owner":"acme","name":"rocket-app"}},
  "effort":{"level":"xhigh"},"thinking":{"enabled":true},"fast_mode":false,
@@ -50,5 +64,5 @@ json() {
  "rate_limits":{"five_hour":{"used_percentage":$3,"resets_at":$((NOW+7800))},"seven_day":{"used_percentage":$4,"resets_at":$((NOW+410000))}}}
 EOF
 }
-json 61 7.42 38 22 | bash "$SCRIPT" > "$OUT/full.ansi"
-json 61 7.42 38 22 | CLAUDE_STATUSLINE_COMPACT=1 bash "$SCRIPT" > "$OUT/compact.ansi"
+json 61 7.42 64 22 | bash "$SCRIPT" > "$OUT/full.ansi"
+json 61 7.42 64 22 | CLAUDE_STATUSLINE_COMPACT=1 bash "$SCRIPT" > "$OUT/compact.ansi"

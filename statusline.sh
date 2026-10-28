@@ -947,9 +947,10 @@ if [ -n "$COST_USD" ]; then
     fi
   fi
 
-  # Compact keeps cost, lines and session duration; drops the lines/hr, api-wait
-  # and $/hr velocities (computed above, blanked here at render time).
-  [ -n "$COMPACT" ] && { LPH_PART="" API_PART="" VELO_PART=""; }
+  # Compact keeps cost, lines and session duration; drops the turn cost and the
+  # lines/hr, api-wait and $/hr velocities (computed above, blanked here at
+  # render time — the turn baseline is still tracked, so it's right when shown).
+  [ -n "$COMPACT" ] && { TURN_PART="" LPH_PART="" API_PART="" VELO_PART=""; }
 
   printf "${BOLD}${GREEN}${COST_EMOJI} cost${RESET} ${BOLD}${YELLOW}$(fmt_usd "$COST_USD")${RESET}${LINES_PART}${TURN_PART}${LPH_PART}${DUR_PART}${API_PART}${VELO_PART}\n"
 fi

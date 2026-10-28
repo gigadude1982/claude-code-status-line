@@ -104,10 +104,11 @@ Every section gets its own vivid 256-color accent and an emoji glyph. Labels ren
 - ↩ **model-switch breadcrumb** — the model you switched from, once you change mid-session
 - **effort badge** tracking `/effort`: 🐢 low · ⚙️ medium · ⚡ high · 🔥 xhigh · 🚀 max
 - 💭 **thinking** (when extended thinking is on) · 🏎️ **fast** (when `/fast` is engaged)
-- 🎨 **output style** (when not `default`) · session name · 🛠️ agent · vim mode
-- 👤 **account** & org · ✨ **plan**
+- 🎨 **output style** (when not `default`) · 🛠️ agent · vim mode · ✨ **plan**
 - 📂 **directory** (`~`-abbreviated, deep paths collapsed to `~/…/parent/base`) · 🌳 **worktree** badge — inside a git worktree, 📂 shows the *main* repo and 🌳 names the worktree
-- `(owner/name)` repo identity, 🌿 **branch** + git status, 🕐 **last-commit age**, 🔀 **PR**
+- `(owner/name)` repo identity (only when the folder is named differently), 🌿 **branch** + git status, 🕐 **last-commit age**, 🔀 **PR**
+- session name · 👤 **account** & org (a personal account's auto-named `<email>'s Organization` is hidden)
+- ordered by priority: Claude Code cuts an over-wide line from the right, so a narrow terminal loses the session name and account before the branch
 
 **🧠 Line 2 — context window**
 - 🧠 **mood emoji** by fullness: 🧠 (<70%) → 😅 (70–89%) → 🥵 (≥90%)
@@ -124,6 +125,7 @@ Every section gets its own vivid 256-color accent and an emoji glyph. Labels ren
 **⚡ Lines 4–5 — plan usage limits (mirrors claude.ai › Settings › Usage)**
 - ⚡ **session** (5-hour window) · 📅 **all models** (weekly) · ✨ **per-model weekly** rows (e.g. *Fable*) · 💳 **usage credits** toggle
 - the same rows, values, and floor-rounded percentages as claude.ai's Usage panel, with gradient bars and reset countdowns (weekly resets show days + the absolute day/time, e.g. `5d18h (sun 8/9 3:00am)`)
+- ┃ **pace tick** on each bar marks where usage would sit at an even burn through the window. Fill short of it gets a ✓; fill past it projects when the window runs dry, `⚠ out in 1h20m` (kept even in compact mode)
 - kept current by a [background refresher](#-usage-meter-refresh) rather than only being fetched when a render notices the cache expired
 
 ### 🌿 Git status

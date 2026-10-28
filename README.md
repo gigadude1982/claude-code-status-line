@@ -114,6 +114,7 @@ Every section gets its own vivid 256-color accent and an emoji glyph. Labels ren
 - 🧠 **mood emoji** by fullness: 🧠 (<70%) → 😅 (70–89%) → 🥵 (≥90%)
 - gradient **usage bar** (green → yellow → orange → red as it fills)
 - used % · remaining % · 📈 **usage sparkline** (trend over time) · 🛫 **runway** (ETA to full)
+- 📦 **compact in Nk**: tokens left before auto-compact, shown once you're halfway there (yellow in the last quarter, red in the last tenth), with a ┃ on the bar when you've set a window short of the full context. Claude Code doesn't send this, so it's rebuilt from the documented rules: `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, then `modelSettings.<model>.autoCompactWindow`, then `autoCompactWindow` (local › project › user settings), lowered by `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`. With nothing set it's ~967K on a 1M window; a 200K window compacts at its limit, so nothing extra shows. Hidden when auto-compact is off (`autoCompactEnabled: false`, `DISABLE_AUTO_COMPACT`, `DISABLE_COMPACT`)
 - token breakdown: input, output, cache read/write · 💾 **cache-hit %** · context size
 - ⚠️ **200k+** badge when the conversation crosses 200k tokens
 

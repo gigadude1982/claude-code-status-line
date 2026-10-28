@@ -304,6 +304,10 @@ case "$CLAUDE_STATUSLINE_BG" in
     fi
     ;;
 esac
+# The usage bars' pace tick wants maximum contrast against both the fill and
+# the empty cells: bright white on a dark terminal, near-black on a light one.
+PACE_TICK='\033[1;38;5;255m'
+[ "$DIM" = '\033[38;5;245m' ] && PACE_TICK='\033[1;38;5;236m'
 
 # Compact mode (CLAUDE_STATUSLINE_COMPACT=1) trims the line down to the
 # essentials — model, plan, dir, branch + git status, the context bar, cost,
@@ -342,22 +346,45 @@ make_spark() {
   printf "%b" "$out"
 }
 
-# make_bar PCT — renders a 20-cell gradient bar. (A second colour arg is still
-# accepted but ignored; the per-cell gradient replaces the old flat colour.)
+# make_bar PCT [_] [PACE] — renders a 20-cell gradient bar. (A second colour arg
+# is still accepted but ignored; the per-cell gradient replaces the old flat
+# colour.) PACE, when given, is the even-burn percentage for a time window: a
+# white ┃ tick is drawn in that cell, so a fill short of the tick is under pace
+# and a fill past it is burning faster than the window allows.
 make_bar() {
-  local pct="${1:-0}"
+  local pct="${1:-0}" pace="${3:-}"
   local ipct; ipct=$(printf '%.0f' "$pct" 2>/dev/null) || ipct=0
   [ "$ipct" -gt 100 ] && ipct=100
   [ "$ipct" -lt 0 ]   && ipct=0
   local filled=$(( (ipct * 20 + 50) / 100 ))
   [ "$filled" -gt 20 ] && filled=20
+  local tick=-1
+  case "$pace" in
+    ''|*[!0-9]*) ;;
+    *) tick=$(( pace * 20 / 100 )); [ "$tick" -gt 19 ] && tick=19 ;;
+  esac
   local out="" i
-  for (( i = 0; i < filled; i++ )); do
-    out="${out}\033[38;5;${GRAD[i]}m█"
+  for (( i = 0; i < 20; i++ )); do
+    if   [ "$i" -eq "$tick" ];   then out="${out}${PACE_TICK}┃\033[22m"
+    elif [ "$i" -lt "$filled" ]; then out="${out}\033[38;5;${GRAD[i]}m█"
+    else                              out="${out}${BAR_EMPTY}░"
+    fi
   done
-  local empty=$(( 20 - filled ))
-  printf -v E "%${empty}s" ""
-  printf "%b%b%s" "$out" "$BAR_EMPTY" "${E// /░}"
+  printf "%b" "$out"
+}
+
+# window_pace RESET_EPOCH WINDOW_SECS — prints the percentage of a rate-limit
+# window that has elapsed (what "used" would read at a perfectly even burn), or
+# nothing when the reset is unknown or the window has barely started — in the
+# first 5% the projection is mostly noise.
+window_pace() {
+  local rst="${1:-}" win="${2:-}"
+  case "$rst" in ''|*[!0-9]*) return ;; esac
+  local left=$(( rst - $(date +%s) ))
+  [ "$left" -le 0 ] || [ "$left" -gt "$win" ] && return
+  local el=$(( (win - left) * 100 / win ))
+  [ "$el" -lt 5 ] && return
+  printf '%d' "$el"
 }
 
 fmt_k() {
@@ -459,7 +486,10 @@ WT_MAIN=""
 GIT_DIR=$(git -C "$DIR" rev-parse --git-dir 2>/dev/null)
 if [ -n "$GIT_DIR" ]; then
   BR=$(git -C "$DIR" -c core.useReplacement=false branch --show-current 2>/dev/null)
-  [ -n "$WT_BRANCH" ] && BR="$WT_BRANCH"
+  # .worktree.branch is the branch Claude Code created the worktree on and
+  # goes stale after a checkout, so git's live answer wins; the stdin value
+  # only fills in when git has none (detached HEAD).
+  [ -z "$BR" ] && [ -n "$WT_BRANCH" ] && BR="$WT_BRANCH"
 
   # Worktree detection: Claude Code passes .worktree.name for worktrees it
   # manages, and any linked worktree has "/worktrees/" in its git-dir. The 📂
@@ -592,7 +622,10 @@ VER_PART=""
 ACCT_PART=""
 if [ -n "$ACCOUNT_EMAIL" ]; then
   ACCT_PART=" ${DIM}as${RESET} ${PINK}👤 ${ACCOUNT_EMAIL}${RESET}"
-  [ -n "$ACCOUNT_ORG" ] && ACCT_PART="${ACCT_PART} ${DIM}@ ${ACCOUNT_ORG}${RESET}"
+  # Personal accounts carry an auto-named "<email>'s Organization", which just
+  # repeats the email — only show the org when it actually says something.
+  [ -n "$ACCOUNT_ORG" ] && [ "$ACCOUNT_ORG" != "${ACCOUNT_EMAIL}'s Organization" ] \
+    && ACCT_PART="${ACCT_PART} ${DIM}@ ${ACCOUNT_ORG}${RESET}"
 fi
 
 PLAN_PART=""
@@ -667,11 +700,16 @@ else
   DIR_LABEL=$(abbrev_path "$DIR")
 fi
 [ -z "$DIR_LABEL" ] && DIR_LABEL="${DIR##*/}"
+# The repo badge earns its room only when the folder is named differently.
+[ "$REPO_NAME" = "${DIR_LABEL##*/}" ] && REPO_PART=""
 
 # Assemble into a variable and print with a constant %b format so a literal '%'
 # in any dynamic value (model, session, dir, branch, account) isn't treated as
 # a printf format specifier.
-LINE1="${BOLD}${MODEL_COLOR}🤖 ${MODEL}${RESET}${MODELSW_PART}${VER_PART}${EFFORT_PART}${THINK_PART}${FAST_PART}${STYLE_PART}${SESSION_PART}${AGENT_PART}${VIM_PART}${ACCT_PART}${PLAN_PART}  ${BOLD}${BLUE}📂 ${DIR_LABEL}${RESET}${WT_PART}${REPO_PART}${BRANCH}${PR_PART}"
+# Claude Code truncates an over-wide line from the right, so order is priority:
+# the "where am I" run (dir, worktree, branch, PR) sits ahead of the free-text
+# session name and the account, which are what a narrow terminal gives up.
+LINE1="${BOLD}${MODEL_COLOR}🤖 ${MODEL}${RESET}${MODELSW_PART}${VER_PART}${EFFORT_PART}${THINK_PART}${FAST_PART}${STYLE_PART}${AGENT_PART}${VIM_PART}${PLAN_PART}  ${BOLD}${BLUE}📂 ${DIR_LABEL}${RESET}${WT_PART}${REPO_PART}${BRANCH}${PR_PART}${SESSION_PART}${ACCT_PART}"
 printf '%b\n' "$LINE1"
 
 # ── line 2: context window bar + token counts ─────────────────────────────────
@@ -847,25 +885,50 @@ fi
 # Data source: the /api/oauth/usage snapshot when available (accurate + has
 # the model-scoped rows), otherwise the stdin five_hour/seven_day fallback.
 
-# render_limit COLOR LABEL PCT RESET_EPOCH [with_date] — one "<label> <bar> N%
-# used resets …" segment. Percent is floored like claude.ai does; the reset
-# and the "used" suffix are dropped in compact mode.
+# render_limit COLOR LABEL PCT RESET_EPOCH [with_date] [WINDOW_SECS] — one
+# "<label> <bar> N% used resets …" segment. Percent is floored like claude.ai
+# does; the reset and the "used" suffix are dropped in compact mode.
+# With WINDOW_SECS the bar carries a pace tick (see make_bar) and the row says
+# how it's tracking: a ✓ while under pace, or — once usage outruns the clock —
+# a linear projection of when the window runs dry ("⚠ out in 1h20m"). That
+# warning survives compact mode; it's the one thing worth the room.
 render_limit() {
-  local lc="$1" lbl="$2" pct="$3" rst="$4" wd="${5:-}"
+  local lc="$1" lbl="$2" pct="$3" rst="$4" wd="${5:-}" win="${6:-}"
   local p="${pct%%.*}"
   case "$p" in ''|*[!0-9]*) p=0 ;; esac
   local rc
   if   [ "$p" -ge 90 ]; then rc="$RED"
   elif [ "$p" -ge 70 ]; then rc="$YELLOW"
   else rc="$GREEN"; fi
-  local bar; bar=$(make_bar "$p")
+  local pace="" pace_part=""
+  [ -n "$win" ] && [ "$p" -lt 100 ] && pace=$(window_pace "$rst" "$win")
+  if [ -n "$pace" ]; then
+    if [ "$p" -gt "$pace" ]; then
+      # Over pace ⇒ at this rate the window empties before it resets.
+      local left=$(( rst - $(date +%s) ))
+      local el=$(( win - left ))
+      local ttf=$(( (100 - p) * el / p ))
+      if [ "$ttf" -lt "$left" ]; then
+        local out_in
+        if [ "$ttf" -ge 86400 ]; then
+          out_in="$(( ttf / 86400 ))d$(( (ttf % 86400) / 3600 ))h"   # weekly: 1d6h, not 30h51m
+        else
+          out_in=$(fmt_dur $(( ttf * 1000 )))
+        fi
+        pace_part=" ${BOLD}${RED}⚠ out in ${out_in}${RESET}"
+      fi
+    elif [ -z "$COMPACT" ]; then
+      pace_part=" ${GREEN}✓${RESET}"
+    fi
+  fi
+  local bar; bar=$(make_bar "$p" "" "$pace")
   local used_part="" rp=""
   if [ -z "$COMPACT" ]; then
     used_part="${DIM} used${RESET}"
     local r; r=$(fmt_reset "$rst" $wd)
     [ -n "$r" ] && rp=" ${DIM}resets${RESET} ${r}"
   fi
-  printf '%s' "${BOLD}${lc}${lbl}${RESET} ${bar}${RESET} ${BOLD}${rc}${p}%${RESET}${used_part}${rp}"
+  printf '%s' "${BOLD}${lc}${lbl}${RESET} ${bar}${RESET} ${BOLD}${rc}${p}%${RESET}${used_part}${pace_part}${rp}"
 }
 
 SES_PCT="" SES_RST="" WK_PCT="" WK_RST="" MODEL_ROWS="" CREDITS_PART=""
@@ -923,17 +986,17 @@ if [ -n "$SES_PCT" ] || [ -n "$WK_PCT" ] || [ -n "$MODEL_ROWS" ]; then
   fi
 
   SES_LINE=""
-  [ -n "$SES_PCT" ] && SES_LINE=$(render_limit "$ORANGE" "⚡ session" "$SES_PCT" "$SES_RST")
+  [ -n "$SES_PCT" ] && SES_LINE=$(render_limit "$ORANGE" "⚡ session" "$SES_PCT" "$SES_RST" "" 18000)
 
   WEEK_LINE=""
-  [ -n "$WK_PCT" ] && WEEK_LINE=$(render_limit "$PINK" "📅 all models" "$WK_PCT" "$WK_RST" with_date)
+  [ -n "$WK_PCT" ] && WEEK_LINE=$(render_limit "$PINK" "📅 all models" "$WK_PCT" "$WK_RST" with_date 604800)
   if [ -n "$MODEL_ROWS" ]; then
     _seen="|"
     while IFS=$'\t' read -r _mn _mu _mr; do
       [ -n "$_mn" ] && [ -n "$_mu" ] || continue
       case "$_seen" in *"|${_mn}|"*) continue ;; esac   # dedupe by model name
       _seen="${_seen}${_mn}|"
-      _mrow=$(render_limit "$PURPLE" "✨ ${_mn}" "$_mu" "$(iso_to_epoch "$_mr")" with_date)
+      _mrow=$(render_limit "$PURPLE" "✨ ${_mn}" "$_mu" "$(iso_to_epoch "$_mr")" with_date 604800)
       [ -n "$WEEK_LINE" ] && WEEK_LINE="${WEEK_LINE}  "
       WEEK_LINE="${WEEK_LINE}${_mrow}"
     done <<< "$MODEL_ROWS"

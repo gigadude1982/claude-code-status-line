@@ -11,6 +11,7 @@ CACHE_FILE="${TMPDIR:-/tmp}/.claude_rl_$(id -u 2>/dev/null || echo 0)_$(basename
 
 # ── parse JSON ────────────────────────────────────────────────────────────────
 MODEL=$(echo "$input"     | jq -r '.model.display_name // "unknown"')
+MODEL_ID=$(echo "$input"  | jq -r '.model.id // empty')
 DIR=$(echo "$input"       | jq -r '.workspace.current_dir // ""')
 SESSION_ID=$(echo "$input"| jq -r '.session_id // empty')
 TRANSCRIPT=$(echo "$input"| jq -r '.transcript_path // empty')
@@ -661,7 +662,7 @@ VER_PART=""
 
 ACCT_PART=""
 if [ -n "$ACCOUNT_EMAIL" ]; then
-  ACCT_PART=" ${DIM}as${RESET} ${PINK}👤 ${ACCOUNT_EMAIL}${RESET}"
+  ACCT_PART="${BOLD}${PINK}👤 ${ACCOUNT_EMAIL}${RESET}"
   # Personal accounts carry an auto-named "<email>'s Organization", which just
   # repeats the email — only show the org when it actually says something.
   [ -n "$ACCOUNT_ORG" ] && [ "$ACCOUNT_ORG" != "${ACCOUNT_EMAIL}'s Organization" ] \
@@ -723,10 +724,11 @@ if [ -n "$SESSION_ID" ] && [ -n "$MODEL" ] && [ "$MODEL" != "unknown" ]; then
   fi
 fi
 
-# In compact mode, drop line 1's secondary badges (keep model, plan, dir, branch).
+# In compact mode, drop line 1's secondary badges (keep account, plan, model,
+# dir, branch).
 if [ -n "$COMPACT" ]; then
   MODELSW_PART="" VER_PART="" EFFORT_PART="" THINK_PART="" FAST_PART="" STYLE_PART=""
-  SESSION_PART="" AGENT_PART="" VIM_PART="" ACCT_PART="" REPO_PART="" PR_PART=""
+  SESSION_PART="" AGENT_PART="" VIM_PART="" REPO_PART="" PR_PART=""
 fi
 
 # Directory segment: abbreviated path (~ for $HOME, deep paths collapsed).
@@ -747,9 +749,13 @@ fi
 # in any dynamic value (model, session, dir, branch, account) isn't treated as
 # a printf format specifier.
 # Claude Code truncates an over-wide line from the right, so order is priority:
-# the "where am I" run (dir, worktree, branch, PR) sits ahead of the free-text
-# session name and the account, which are what a narrow terminal gives up.
-LINE1="${BOLD}${MODEL_COLOR}🤖 ${MODEL}${RESET}${MODELSW_PART}${VER_PART}${EFFORT_PART}${THINK_PART}${FAST_PART}${STYLE_PART}${AGENT_PART}${VIM_PART}${PLAN_PART}  ${BOLD}${BLUE}📂 ${DIR_LABEL}${RESET}${WT_PART}${REPO_PART}${BRANCH}${PR_PART}${SESSION_PART}${ACCT_PART}"
+# who you're signed in as leads (wrong account is the costly mistake on a
+# multi-profile machine), then the model, then the "where am I" run (dir,
+# worktree, branch, PR), and the free-text session name is what a narrow
+# terminal gives up.
+WHO_PART="${ACCT_PART}${PLAN_PART}"; WHO_PART="${WHO_PART# }"
+[ -n "$WHO_PART" ] && WHO_PART="${WHO_PART}  "
+LINE1="${WHO_PART}${BOLD}${MODEL_COLOR}🤖 ${MODEL}${RESET}${MODELSW_PART}${VER_PART}${EFFORT_PART}${THINK_PART}${FAST_PART}${STYLE_PART}${AGENT_PART}${VIM_PART}  ${BOLD}${BLUE}📂 ${DIR_LABEL}${RESET}${WT_PART}${REPO_PART}${BRANCH}${PR_PART}${SESSION_PART}"
 printf '%b\n' "$LINE1"
 
 # ── line 2: context window bar + token counts ─────────────────────────────────
@@ -761,7 +767,65 @@ if [ -n "$USED_PCT" ]; then
   elif [ "$PCT" -ge 70 ]; then BAR_COLOR="$YELLOW"
   else BAR_COLOR="$GREEN"; fi
 
-  BAR=$(make_bar "$PCT" "$BAR_COLOR")
+  # Auto-compact point. Claude Code doesn't send it, so rebuild it from what the
+  # docs (code.claude.com/docs/en/model-config) define:
+  #   window  = CLAUDE_CODE_AUTO_COMPACT_WINDOW › modelSettings.<model>.autoCompactWindow
+  #             › autoCompactWindow (settings: local › project › user), in tokens
+  #   default = ~967K on a native 1M window; a 200K window compacts at its limit,
+  #             which is just the end of the bar, so there's nothing to mark
+  #   trigger = window, lowered by CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (% of window)
+  # Off entirely with autoCompactEnabled=false, DISABLE_AUTO_COMPACT or
+  # DISABLE_COMPACT. The trigger draws a ┃ on the bar (when it's short of the
+  # end), and "📦 compact in Nk" appears once you're halfway there.
+  COMPACT_TICK="" COMPACT_PART=""
+  _ctx=$CTX_SIZE; case "$_ctx" in ''|*[!0-9]*) _ctx=0 ;; esac
+  if [ "$_ctx" -gt 0 ] && [ -z "${DISABLE_AUTO_COMPACT:-}" ] && [ -z "${DISABLE_COMPACT:-}" ]; then
+    _cfgs=()
+    for _f in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" \
+              "${PROJ_DIR:-$DIR}/.claude/settings.json" "${PROJ_DIR:-$DIR}/.claude/settings.local.json"; do
+      [ -f "$_f" ] && _cfgs+=("$_f")
+    done
+    _acset=""
+    # Later files win (user → project → local), as in Claude Code's precedence.
+    [ "${#_cfgs[@]}" -gt 0 ] && _acset=$(jq -rs --arg id "$MODEL_ID" --arg dn "$MODEL" '
+      (map(.autoCompactEnabled) | map(select(. != null)) | last) as $en
+      | (map(.modelSettings[$id].autoCompactWindow // .modelSettings[$dn].autoCompactWindow)
+          | map(select(. != null)) | last) as $mw
+      | (map(.autoCompactWindow) | map(select(. != null)) | last) as $w
+      | "\(if $en == false then "off" else "on" end) \($mw // $w // "")"' "${_cfgs[@]}" 2>/dev/null)
+    read -r _acen _acwin <<< "$_acset"
+    if [ "$_acen" != "off" ]; then
+      _ew="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}" _en="${CLAUDE_CODE_AUTO_COMPACT_WINDOW%[kKmM]}"
+      case "$_en" in ''|*[!0-9]*) _ew="" ;; esac      # "200k" / "1m" / "250000" only
+      case "$_ew" in
+        *[kK]) _ew=$(( _en * 1000 )) ;;
+        *[mM]) _ew=$(( _en * 1000000 )) ;;
+      esac
+      [ -n "$_ew" ] && _acwin="$_ew"
+      case "$_acwin" in ''|*[!0-9]*) _acwin="" ;; esac
+      [ -z "$_acwin" ] && [ "$_ctx" -ge 1000000 ] && _acwin=967000
+      [ -n "$_acwin" ] && [ "$_acwin" -gt "$_ctx" ] && _acwin=$_ctx
+      _acpct="${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-}"
+      case "$_acpct" in ''|*[!0-9]*) ;; *) [ -n "$_acwin" ] && [ "$_acpct" -ge 1 ] && [ "$_acpct" -le 100 ] \
+        && _acwin=$(( _acwin * _acpct / 100 )) ;; esac
+      if [ -n "$_acwin" ] && [ "$_acwin" -gt 0 ]; then
+        # used_percentage is input-only against the full window — the same
+        # measure the compact point is in, once both are tokens.
+        _used=$(awk -v p="$USED_PCT" -v s="$_ctx" 'BEGIN{ printf "%.0f", p*s/100 }')
+        _tpct=$(( _acwin * 100 / _ctx ))
+        [ "$_tpct" -lt 95 ] && COMPACT_TICK="$_tpct"
+        _left=$(( _acwin - _used ))
+        if [ "$_left" -gt 0 ] && [ $(( _used * 2 )) -ge "$_acwin" ]; then
+          _acc="$DIM"
+          [ $(( _left * 4 )) -lt "$_acwin" ]  && _acc="$YELLOW"   # last quarter
+          [ $(( _left * 10 )) -lt "$_acwin" ] && _acc="$RED"      # last tenth
+          COMPACT_PART=" ${_acc}📦 compact in $(fmt_k "$_left")${RESET}"
+        fi
+      fi
+    fi
+  fi
+
+  BAR=$(make_bar "$PCT" "$BAR_COLOR" "$COMPACT_TICK")
 
   # The brain reflects how full the window is: calm → sweating → overheating.
   CTX_EMOJI="🧠"
@@ -864,7 +928,7 @@ if [ -n "$USED_PCT" ]; then
   # segment (e.g. the cache-hit badge) isn't treated as a printf format spec.
   CTX_LABEL="${PURPLE}"
   [ -n "$GRID_ACCENT" ] && CTX_LABEL="$GRID_ACCENT"
-  LINE2="${BOLD}${CTX_LABEL}${CTX_EMOJI} ctx${RESET} ${BAR}${RESET} ${BOLD}${BAR_COLOR}${PCT}%${RESET} ${DIM}rem:${RESET}${GREEN}${REM}%${RESET}${SPARK_PART}${RUNWAY_PART}${TOK_DETAIL} ${DIM}ctx:${RESET}${CYAN}${CTX_K}${RESET}${EXCEED_PART}"
+  LINE2="${BOLD}${CTX_LABEL}${CTX_EMOJI} ctx${RESET} ${BAR}${RESET} ${BOLD}${BAR_COLOR}${PCT}%${RESET} ${DIM}rem:${RESET}${GREEN}${REM}%${RESET}${COMPACT_PART}${SPARK_PART}${RUNWAY_PART}${TOK_DETAIL} ${DIM}ctx:${RESET}${CYAN}${CTX_K}${RESET}${EXCEED_PART}"
   printf '%b\n' "$LINE2"
 else
   printf "${PURPLE}🧠 ${DIM}ctx: waiting for first message…${RESET}\n"
@@ -947,9 +1011,10 @@ if [ -n "$COST_USD" ]; then
     fi
   fi
 
-  # Compact keeps cost, lines and session duration; drops the lines/hr, api-wait
-  # and $/hr velocities (computed above, blanked here at render time).
-  [ -n "$COMPACT" ] && { LPH_PART="" API_PART="" VELO_PART=""; }
+  # Compact keeps cost, lines and session duration; drops the turn cost and the
+  # lines/hr, api-wait and $/hr velocities (computed above, blanked here at
+  # render time — the turn baseline is still tracked, so it's right when shown).
+  [ -n "$COMPACT" ] && { TURN_PART="" LPH_PART="" API_PART="" VELO_PART=""; }
 
   printf "${BOLD}${GREEN}${COST_EMOJI} cost${RESET} ${BOLD}${YELLOW}$(fmt_usd "$COST_USD")${RESET}${LINES_PART}${TURN_PART}${LPH_PART}${DUR_PART}${API_PART}${VELO_PART}\n"
 fi

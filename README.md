@@ -100,20 +100,22 @@ Every section gets its own vivid 256-color accent and an emoji glyph. Labels ren
 ## 🔭 What it shows
 
 **🪪 Line 1 — identity & live state**
+- 👤 **signed-in account** & org first, then ✨ **plan**, so you always know which login you're spending (a personal account's auto-named `<email>'s Organization` is hidden)
 - 🤖 **model**, tinted by tier like a medal ladder (Fable = platinum, Mythos = icy platinum, Opus = gold, Sonnet = bronze, Haiku = green) + version
 - ↩ **model-switch breadcrumb** — the model you switched from, once you change mid-session
 - **effort badge** tracking `/effort`: 🐢 low · ⚙️ medium · ⚡ high · 🔥 xhigh · 🚀 max
 - 💭 **thinking** (when extended thinking is on) · 🏎️ **fast** (when `/fast` is engaged)
-- 🎨 **output style** (when not `default`) · 🛠️ agent · vim mode · ✨ **plan**
+- 🎨 **output style** (when not `default`) · 🛠️ agent · vim mode
 - 📂 **directory** (`~`-abbreviated, deep paths collapsed to `~/…/parent/base`) · 🌳 **worktree** badge — inside a git worktree, 📂 shows the *main* repo and 🌳 names the worktree
 - `(owner/name)` repo identity (only when the folder is named differently), 🌿 **branch** + git status, 🕐 **last-commit age**, 🔀 **PR** with CI status: ✅ passed · ❌ failed · ⏳ running (via `gh pr checks`, refreshed in the background every 60s; `CLAUDE_STATUSLINE_CI=0` turns it off)
-- session name · 👤 **account** & org (a personal account's auto-named `<email>'s Organization` is hidden)
-- ordered by priority: Claude Code cuts an over-wide line from the right, so a narrow terminal loses the session name and account before the branch
+- session name
+- ordered by priority: Claude Code cuts an over-wide line from the right, so a narrow terminal loses the session name first and the account never
 
 **🧠 Line 2 — context window**
 - 🧠 **mood emoji** by fullness: 🧠 (<70%) → 😅 (70–89%) → 🥵 (≥90%)
 - gradient **usage bar** (green → yellow → orange → red as it fills)
 - used % · remaining % · 📈 **usage sparkline** (trend over time) · 🛫 **runway** (ETA to full)
+- 📦 **compact in Nk**: tokens left before auto-compact, shown once you're halfway there (yellow in the last quarter, red in the last tenth), with a ┃ on the bar when you've set a window short of the full context. Claude Code doesn't send this, so it's rebuilt from the documented rules: `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, then `modelSettings.<model>.autoCompactWindow`, then `autoCompactWindow` (local › project › user settings), lowered by `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`. With nothing set it's ~967K on a 1M window; a 200K window compacts at its limit, so nothing extra shows. Hidden when auto-compact is off (`autoCompactEnabled: false`, `DISABLE_AUTO_COMPACT`, `DISABLE_COMPACT`)
 - token breakdown: input, output, cache read/write · 💾 **cache-hit %** · context size
 - ⚠️ **200k+** badge when the conversation crosses 200k tokens
 
@@ -243,7 +245,7 @@ If the snapshot does go stale — endpoint down, or credits exhausted and the en
 
 ### 🤏 Compact mode
 
-Set `CLAUDE_STATUSLINE_COMPACT=1` to trim the line down to the essentials — model, plan, directory + worktree, branch + git status, the context bar, cost, and the usage-limit bars — hiding the many secondary badges (effort/thinking/fast/style/session/account/repo/PR, sparkline/runway/token breakdown, api-wait/velocities, and the "used"/reset annotations on the limit bars). Everything is still computed the same way; the optional segments are just hidden.
+Set `CLAUDE_STATUSLINE_COMPACT=1` to trim the line down to the essentials — account, plan, model, directory + worktree, branch + git status, the context bar, cost, and the usage-limit bars — hiding the many secondary badges (effort/thinking/fast/style/session/repo/PR, sparkline/runway/token breakdown, turn cost, api-wait/velocities, and the "used"/reset annotations on the limit bars). Everything is still computed the same way; the optional segments are just hidden.
 
 ```bash
 export CLAUDE_STATUSLINE_COMPACT=1

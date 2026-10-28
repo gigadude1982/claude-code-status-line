@@ -106,7 +106,7 @@ Every section gets its own vivid 256-color accent and an emoji glyph. Labels ren
 - 💭 **thinking** (when extended thinking is on) · 🏎️ **fast** (when `/fast` is engaged)
 - 🎨 **output style** (when not `default`) · 🛠️ agent · vim mode · ✨ **plan**
 - 📂 **directory** (`~`-abbreviated, deep paths collapsed to `~/…/parent/base`) · 🌳 **worktree** badge — inside a git worktree, 📂 shows the *main* repo and 🌳 names the worktree
-- `(owner/name)` repo identity (only when the folder is named differently), 🌿 **branch** + git status, 🕐 **last-commit age**, 🔀 **PR**
+- `(owner/name)` repo identity (only when the folder is named differently), 🌿 **branch** + git status, 🕐 **last-commit age**, 🔀 **PR** with CI status: ✅ passed · ❌ failed · ⏳ running (via `gh pr checks`, refreshed in the background every 60s; `CLAUDE_STATUSLINE_CI=0` turns it off)
 - session name · 👤 **account** & org (a personal account's auto-named `<email>'s Organization` is hidden)
 - ordered by priority: Claude Code cuts an over-wide line from the right, so a narrow terminal loses the session name and account before the branch
 
@@ -119,7 +119,7 @@ Every section gets its own vivid 256-color accent and an emoji glyph. Labels ren
 
 **💰 Line 3 — cost & timing**
 - **cost emoji** by tier: 🪙 (<$1) · 💰 ($1–$9) · 💸 (≥$10) + total cost
-- lines changed (+added / −removed) · ✏️ **lines/hr** velocity
+- lines changed (+added / −removed) · **turn cost**, what everything since your latest prompt has cost (green under $0.10, yellow under $1, red above) · ✏️ **lines/hr** velocity
 - ⏱️ session duration · 🛰️ time spent waiting on the API · 💵 **cost velocity** ($/hr with a 🐢→🔥 burn emoji)
 
 **⚡ Lines 4–5 — plan usage limits (mirrors claude.ai › Settings › Usage)**

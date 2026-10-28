@@ -13,6 +13,7 @@ CACHE_FILE="${TMPDIR:-/tmp}/.claude_rl_$(id -u 2>/dev/null || echo 0)_$(basename
 MODEL=$(echo "$input"     | jq -r '.model.display_name // "unknown"')
 DIR=$(echo "$input"       | jq -r '.workspace.current_dir // ""')
 SESSION_ID=$(echo "$input"| jq -r '.session_id // empty')
+TRANSCRIPT=$(echo "$input"| jq -r '.transcript_path // empty')
 REPO_OWNER=$(echo "$input"| jq -r '.workspace.repo.owner // empty')
 REPO_NAME=$(echo "$input" | jq -r '.workspace.repo.name // empty')
 SESSION=$(echo "$input"   | jq -r '.session_name // empty')
@@ -580,6 +581,45 @@ if [ -n "$PR_NUM" ]; then
     *)                 _pc="$CYAN";   _ps="" ;;
   esac
   PR_PART=" ${BOLD}${_pc}🔀 #${PR_NUM}${_ps}${RESET}"
+
+  # CI status for the PR: ✅ all passed · ❌ something failed · ⏳ still running.
+  # `gh pr checks` is a network call, so it never runs in the render path: a
+  # per-PR cache file holds "<epoch> <state>", and once it's older than 60s a
+  # detached job refreshes it (a lock keeps renders from stacking up jobs).
+  # The badge simply lags one refresh behind. No checks, no gh, or not logged
+  # in all render as nothing. Opt out: CLAUDE_STATUSLINE_CI=0.
+  if [ "${CLAUDE_STATUSLINE_CI:-1}" != "0" ] && command -v gh >/dev/null 2>&1; then
+    _crepo="${REPO_OWNER:+$REPO_OWNER/$REPO_NAME}"
+    _ckey="${_crepo:-$DIR}#${PR_NUM}"; _ckey="${_ckey//[^A-Za-z0-9._-]/_}"
+    CI_CACHE="${TMPDIR:-/tmp}/.claude_ci_$(id -u 2>/dev/null || echo 0)_${_ckey}"
+    _cts="" _cst=""
+    [ -f "$CI_CACHE" ] && read -r _cts _cst < "$CI_CACHE" 2>/dev/null
+    case "$_cts" in ''|*[!0-9]*) _cts=0 ;; esac
+    _cnow=$(date +%s)
+    if [ $(( _cnow - _cts )) -ge 60 ] && mkdir "${CI_CACHE}.lock" 2>/dev/null; then
+      (
+        # gh exits non-zero for pending (8) and no-checks (1), so read the JSON
+        # rather than the exit code; empty output means there's nothing to show.
+        _st=$(cd "$DIR" 2>/dev/null && gh pr checks "$PR_NUM" ${_crepo:+-R "$_crepo"} --json bucket 2>/dev/null \
+          | jq -r 'map(.bucket) |
+              if   any(. == "fail" or . == "cancel") then "fail"
+              elif any(. == "pending")                then "pending"
+              elif any(. == "pass")                   then "pass"
+              else "none" end' 2>/dev/null)
+        printf '%s %s\n' "$(date +%s)" "${_st:-none}" > "${CI_CACHE}.tmp" && mv -f "${CI_CACHE}.tmp" "$CI_CACHE"
+        rmdir "${CI_CACHE}.lock"
+      ) >/dev/null 2>&1 &
+      disown 2>/dev/null || true
+    fi
+    # A lock left by a killed job would block refreshes forever; clear stale ones.
+    [ -d "${CI_CACHE}.lock" ] && [ -n "$(find "${CI_CACHE}.lock" -maxdepth 0 -mmin +2 2>/dev/null)" ] \
+      && rmdir "${CI_CACHE}.lock" 2>/dev/null
+    case "$_cst" in
+      pass)    PR_PART="${PR_PART} ✅" ;;
+      fail)    PR_PART="${PR_PART} ❌" ;;
+      pending) PR_PART="${PR_PART} ⏳" ;;
+    esac
+  fi
 fi
 
 # Reasoning-effort badge — escalates from a calm turtle to a rocket. This tracks
@@ -871,11 +911,47 @@ if [ -n "$COST_USD" ]; then
     [ -n "$_rate" ] && VELO_PART=" ${DIM}·${RESET} ${_bc}${_be} \$${_rate}/hr${RESET}"
   fi
 
+  # Turn cost — what everything since your latest prompt has cost, so one
+  # expensive turn stands out from a session of cheap ones. A turn starts at a
+  # transcript "user" entry that isn't a tool result; when that entry's uuid
+  # changes, the last cost seen becomes the new baseline. State is a per-session
+  # temp file holding "<prompt uuid> <baseline> <last cost>". The transcript is
+  # only tail-read, so a huge session file costs the same as a small one.
+  TURN_PART=""
+  if [ -n "$SESSION_ID" ] && [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
+    _tsid="${SESSION_ID//[^A-Za-z0-9._-]/}"
+    TURN_FILE="${TMPDIR:-/tmp}/.claude_turncost_$(id -u 2>/dev/null || echo 0)_${_tsid}"
+    _prompt=$(tail -c 262144 "$TRANSCRIPT" 2>/dev/null \
+      | grep '"type":"user"' | grep -v '"tool_result"' \
+      | jq -Rr 'fromjson? | select(.type == "user" and .isMeta != true) | .uuid // empty' 2>/dev/null \
+      | tail -1)
+    if [ -n "$_prompt" ]; then
+      _tp="" _tb="" _tl=""
+      [ -f "$TURN_FILE" ] && read -r _tp _tb _tl < "$TURN_FILE" 2>/dev/null
+      if [ -z "$_tp" ]; then
+        _tb="$COST_USD"                    # first sight: no history to split on
+      elif [ "$_prompt" != "$_tp" ]; then
+        _tb="${_tl:-$COST_USD}"            # new prompt: the previous turn ended here
+      fi
+      # A cost that went backwards (cleared session) restarts the baseline.
+      awk -v c="$COST_USD" -v b="$_tb" 'BEGIN{ exit !(c+0 < b+0) }' && _tb="$COST_USD"
+      printf '%s %s %s\n' "$_prompt" "$_tb" "$COST_USD" > "$TURN_FILE" 2>/dev/null
+      _turn=$(awk -v c="$COST_USD" -v b="$_tb" 'BEGIN{ d=c-b; if (d >= 0.005) printf "%.2f", d }')
+      if [ -n "$_turn" ]; then
+        # 🟢 under a dime · 🟡 under a dollar · 🔴 a dollar or more, in one turn.
+        _tc="$GREEN"
+        awk -v d="$_turn" 'BEGIN{ exit !(d >= 0.10) }' && _tc="$YELLOW"
+        awk -v d="$_turn" 'BEGIN{ exit !(d >= 1) }'    && _tc="$RED"
+        TURN_PART=" ${DIM}·${RESET} ${DIM}turn${RESET} ${_tc}+\$${_turn}${RESET}"
+      fi
+    fi
+  fi
+
   # Compact keeps cost, lines and session duration; drops the lines/hr, api-wait
   # and $/hr velocities (computed above, blanked here at render time).
   [ -n "$COMPACT" ] && { LPH_PART="" API_PART="" VELO_PART=""; }
 
-  printf "${BOLD}${GREEN}${COST_EMOJI} cost${RESET} ${BOLD}${YELLOW}$(fmt_usd "$COST_USD")${RESET}${LINES_PART}${LPH_PART}${DUR_PART}${API_PART}${VELO_PART}\n"
+  printf "${BOLD}${GREEN}${COST_EMOJI} cost${RESET} ${BOLD}${YELLOW}$(fmt_usd "$COST_USD")${RESET}${LINES_PART}${TURN_PART}${LPH_PART}${DUR_PART}${API_PART}${VELO_PART}\n"
 fi
 
 # ── lines 4-5: plan usage limits (mirrors claude.ai's Usage panel) ───────────

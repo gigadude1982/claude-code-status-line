@@ -985,13 +985,23 @@ if [ -n "$COST_USD" ]; then
   if [ -n "$SESSION_ID" ] && [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
     _tsid="${SESSION_ID//[^A-Za-z0-9._-]/}"
     TURN_FILE="${TMPDIR:-/tmp}/.claude_turncost_$(id -u 2>/dev/null || echo 0)_${_tsid}"
-    _prompt=$(tail -c 262144 "$TRANSCRIPT" 2>/dev/null \
-      | grep '"type":"user"' | grep -v '"tool_result"' \
-      | jq -Rr 'fromjson? | select(.type == "user" and .isMeta != true) | .uuid // empty' 2>/dev/null \
-      | tail -1)
+    _last_prompt() {
+      tail -c "$1" "$TRANSCRIPT" 2>/dev/null \
+        | grep '"type":"user"' | grep -v '"tool_result"' \
+        | jq -Rr 'fromjson? | select(.type == "user" and .isMeta != true) | .uuid // empty' 2>/dev/null \
+        | tail -1
+    }
+    _tp="" _tb="" _tl=""
+    [ -f "$TURN_FILE" ] && read -r _tp _tb _tl < "$TURN_FILE" 2>/dev/null
+    _prompt=$(_last_prompt 262144)
+    # A long turn (big tool output) can push its prompt out of the tail window.
+    # No prompt in the window means none newer than the one already recorded —
+    # renders are far more frequent than 256KB of output — so keep that one. A
+    # session with nothing recorded yet gets one wider look instead.
+    if [ -z "$_prompt" ]; then
+      if [ -n "$_tp" ]; then _prompt="$_tp"; else _prompt=$(_last_prompt 2097152); fi
+    fi
     if [ -n "$_prompt" ]; then
-      _tp="" _tb="" _tl=""
-      [ -f "$TURN_FILE" ] && read -r _tp _tb _tl < "$TURN_FILE" 2>/dev/null
       if [ -z "$_tp" ]; then
         _tb="$COST_USD"                    # first sight: no history to split on
       elif [ "$_prompt" != "$_tp" ]; then

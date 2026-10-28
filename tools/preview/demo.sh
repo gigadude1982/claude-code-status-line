@@ -51,6 +51,10 @@ chmod +x "$ROOT/bin/gh"
 export PATH="$ROOT/bin:$PATH"
 echo "$(date +%s) pass" > "${TMPDIR}.claude_ci_$(id -u)_acme_rocket-app_128"
 
+# Today's spend: one other session earlier today, so the 📆 total shows.
+SPEND="$HOME/.local/state/claude-statusline/spend-.claude/$(date +%F)"
+mkdir -p "$SPEND"; echo "0 4.18" > "$SPEND/earlier-session"
+
 json() {
   cat <<EOF
 {"session_id":"$SID","session_name":"warp-drive","version":"2.4.12","transcript_path":"$TRANSCRIPT",

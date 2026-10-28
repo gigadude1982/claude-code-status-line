@@ -1011,12 +1011,85 @@ if [ -n "$COST_USD" ]; then
     fi
   fi
 
-  # Compact keeps cost, lines and session duration; drops the turn cost and the
-  # lines/hr, api-wait and $/hr velocities (computed above, blanked here at
-  # render time — the turn baseline is still tracked, so it's right when shown).
-  [ -n "$COMPACT" ] && { TURN_PART="" LPH_PART="" API_PART="" VELO_PART=""; }
+  # Today's spend across every session on this profile. Each session keeps one
+  # file in a per-day folder holding "<baseline> <last cost>"; today's total is
+  # the sum of (last - baseline). The baseline is what the session had already
+  # spent before today (its last cost in yesterday's folder), so a session that
+  # runs past midnight only counts what it spent after. Files are per session,
+  # so concurrent sessions never write the same file. Lives under XDG state, not
+  # $TMPDIR, so a reboot doesn't zero the day; folders older than 7 days are
+  # swept when a new day's folder is created. Shown only when it says more than
+  # the session cost already does.
+  TODAY_PART=""
+  if [ -n "$SESSION_ID" ]; then
+    _sroot="${XDG_STATE_HOME:-$HOME/.local/state}/claude-statusline/spend-$(basename "$_CLAUDE_CFG")"
+    _day=$(date +%F) _yday=$(date -v-1d +%F 2>/dev/null || date -d yesterday +%F 2>/dev/null)
+    _sdir="$_sroot/$_day"
+    if [ ! -d "$_sdir" ] && mkdir -p "$_sdir" 2>/dev/null; then
+      find "$_sroot" -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} + 2>/dev/null
+    fi
+    _ssid="${SESSION_ID//[^A-Za-z0-9._-]/}"
+    _sb="" _sl=""
+    [ -f "$_sdir/$_ssid" ] && read -r _sb _sl < "$_sdir/$_ssid" 2>/dev/null
+    if [ -z "$_sb" ]; then
+      _sb=0
+      [ -n "$_yday" ] && [ -f "$_sroot/$_yday/$_ssid" ] \
+        && read -r _yb _sb < "$_sroot/$_yday/$_ssid" 2>/dev/null   # yesterday's last
+    fi
+    # A cost that went backwards (cleared session) restarts the baseline.
+    awk -v c="$COST_USD" -v b="$_sb" 'BEGIN{ exit !(c+0 < b+0) }' && _sb=0
+    printf '%s %s\n' "$_sb" "$COST_USD" > "$_sdir/.$_ssid.tmp" 2>/dev/null \
+      && mv -f "$_sdir/.$_ssid.tmp" "$_sdir/$_ssid" 2>/dev/null
+    _today=$(cat "$_sdir"/* 2>/dev/null | awk '{ t += $2 - $1 } END { printf "%.2f", t }')
+    awk -v t="$_today" -v c="$COST_USD" 'BEGIN{ exit !(t - c >= 0.005 || c - t >= 0.005) }' \
+      && TODAY_PART=" ${DIM}·${RESET} ${DIM}📆 today${RESET} ${YELLOW}\$${_today}${RESET}"
+  fi
 
-  printf "${BOLD}${GREEN}${COST_EMOJI} cost${RESET} ${BOLD}${YELLOW}$(fmt_usd "$COST_USD")${RESET}${LINES_PART}${TURN_PART}${LPH_PART}${DUR_PART}${API_PART}${VELO_PART}\n"
+  # Milestones — a short-lived badge when the session crosses a cost mark
+  # ($1 $5 $10 $25 $50 $100 $250 $500) or a lines-changed mark (100 500 1k
+  # 2.5k 5k 10k). It shows for 90s after the crossing, then gets out of the way.
+  # State is a per-session temp file: "<cost mark> <lines mark> <flash epoch>
+  # <label>". The first render of a session only records where it stands, so
+  # installing mid-session or resuming one doesn't fire a stale celebration.
+  MILESTONE_PART=""
+  if [ -n "$SESSION_ID" ]; then
+    _mfile="${TMPDIR:-/tmp}/.claude_milestone_$(id -u 2>/dev/null || echo 0)_${SESSION_ID//[^A-Za-z0-9._-]/}"
+    _cm=0
+    for _m in 1 5 10 25 50 100 250 500; do
+      awk -v c="$COST_USD" -v m="$_m" 'BEGIN{ exit !(c+0 >= m) }' && _cm=$_m
+    done
+    _ma=$LINES_ADD; case "$_ma" in ''|*[!0-9]*) _ma=0 ;; esac
+    _md=$LINES_DEL; case "$_md" in ''|*[!0-9]*) _md=0 ;; esac
+    _lt=$(( _ma + _md )) _lm=0
+    for _m in 100 500 1000 2500 5000 10000; do [ "$_lt" -ge "$_m" ] && _lm=$_m; done
+    _pcm="" _plm="" _pts=0 _plbl=""
+    [ -f "$_mfile" ] && read -r _pcm _plm _pts _plbl < "$_mfile" 2>/dev/null
+    _mnow=$(date +%s)
+    if [ -z "$_pcm" ]; then
+      printf '%s %s 0 -\n' "$_cm" "$_lm" > "$_mfile" 2>/dev/null
+    elif [ "$_cm" -gt "$_pcm" ] || [ "$_lm" -gt "$_plm" ]; then
+      if [ "$_cm" -gt "$_pcm" ]; then
+        _plbl="💸 \$${_cm}_club"
+      else
+        _lk=$_lm; [ "$_lm" -ge 1000 ] && _lk="$(awk -v n="$_lm" 'BEGIN{ printf "%gk", n/1000 }')"
+        _plbl="🏆 ${_lk}_lines"
+      fi
+      _pts=$_mnow
+      printf '%s %s %s %s\n' "$_cm" "$_lm" "$_pts" "$_plbl" > "$_mfile" 2>/dev/null
+    fi
+    # Labels are stored with '_' for spaces so the state file stays one line of
+    # space-separated fields.
+    [ "$_plbl" != "-" ] && [ -n "$_plbl" ] && [ $(( _mnow - _pts )) -lt 90 ] \
+      && MILESTONE_PART=" ${BOLD}${MAGENTA}${_plbl//_/ }!${RESET}"
+  fi
+
+  # Compact keeps cost, lines and session duration; drops the turn cost, today's
+  # spend, milestones and the lines/hr, api-wait and $/hr velocities (computed
+  # above, blanked here at render time — their state is still tracked, so each
+  # is right when shown).
+  [ -n "$COMPACT" ] && { TURN_PART="" TODAY_PART="" MILESTONE_PART="" LPH_PART="" API_PART="" VELO_PART=""; }
+
+  printf "${BOLD}${GREEN}${COST_EMOJI} cost${RESET} ${BOLD}${YELLOW}$(fmt_usd "$COST_USD")${RESET}${LINES_PART}${TURN_PART}${LPH_PART}${DUR_PART}${API_PART}${VELO_PART}${TODAY_PART}${MILESTONE_PART}\n"
 fi
 
 # ── lines 4-5: plan usage limits (mirrors claude.ai's Usage panel) ───────────

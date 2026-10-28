@@ -123,6 +123,8 @@ Every section gets its own vivid 256-color accent and an emoji glyph. Labels ren
 - **cost emoji** by tier: 🪙 (<$1) · 💰 ($1–$9) · 💸 (≥$10) + total cost
 - lines changed (+added / −removed) · **turn cost**, what everything since your latest prompt has cost (green under $0.10, yellow under $1, red above) · ✏️ **lines/hr** velocity
 - ⏱️ session duration · 🛰️ time spent waiting on the API · 💵 **cost velocity** ($/hr with a 🐢→🔥 burn emoji)
+- 📆 **today's spend** across every session on this profile, shown when it differs from the session cost. Each session records its `cost.total_cost_usd` under `~/.local/state/claude-statusline/` (survives reboots, swept after 7 days); a session that runs past midnight only counts what it spent today
+- **milestones**: a 90-second badge when the session crosses a cost mark (💸 `$1` `$5` `$10` `$25` `$50` `$100` `$250` `$500` club) or a lines-changed mark (🏆 100 · 500 · 1k · 2.5k · 5k · 10k lines)
 
 **⚡ Lines 4–5 — plan usage limits (mirrors claude.ai › Settings › Usage)**
 - ⚡ **session** (5-hour window) · 📅 **all models** (weekly) · ✨ **per-model weekly** rows (e.g. *Fable*) · 💳 **usage credits** toggle
@@ -245,7 +247,7 @@ If the snapshot does go stale — endpoint down, or credits exhausted and the en
 
 ### 🤏 Compact mode
 
-Set `CLAUDE_STATUSLINE_COMPACT=1` to trim the line down to the essentials — account, plan, model, directory + worktree, branch + git status, the context bar, cost, and the usage-limit bars — hiding the many secondary badges (effort/thinking/fast/style/session/repo/PR, sparkline/runway/token breakdown, turn cost, api-wait/velocities, and the "used"/reset annotations on the limit bars). Everything is still computed the same way; the optional segments are just hidden.
+Set `CLAUDE_STATUSLINE_COMPACT=1` to trim the line down to the essentials — account, plan, model, directory + worktree, branch + git status, the context bar, cost, and the usage-limit bars — hiding the many secondary badges (effort/thinking/fast/style/session/repo/PR, sparkline/runway/token breakdown, turn cost, today's spend, milestones, api-wait/velocities, and the "used"/reset annotations on the limit bars). Everything is still computed the same way; the optional segments are just hidden.
 
 ```bash
 export CLAUDE_STATUSLINE_COMPACT=1

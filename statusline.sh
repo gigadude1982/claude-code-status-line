@@ -662,7 +662,7 @@ VER_PART=""
 
 ACCT_PART=""
 if [ -n "$ACCOUNT_EMAIL" ]; then
-  ACCT_PART=" ${DIM}as${RESET} ${PINK}👤 ${ACCOUNT_EMAIL}${RESET}"
+  ACCT_PART="${BOLD}${PINK}👤 ${ACCOUNT_EMAIL}${RESET}"
   # Personal accounts carry an auto-named "<email>'s Organization", which just
   # repeats the email — only show the org when it actually says something.
   [ -n "$ACCOUNT_ORG" ] && [ "$ACCOUNT_ORG" != "${ACCOUNT_EMAIL}'s Organization" ] \
@@ -724,10 +724,11 @@ if [ -n "$SESSION_ID" ] && [ -n "$MODEL" ] && [ "$MODEL" != "unknown" ]; then
   fi
 fi
 
-# In compact mode, drop line 1's secondary badges (keep model, plan, dir, branch).
+# In compact mode, drop line 1's secondary badges (keep account, plan, model,
+# dir, branch).
 if [ -n "$COMPACT" ]; then
   MODELSW_PART="" VER_PART="" EFFORT_PART="" THINK_PART="" FAST_PART="" STYLE_PART=""
-  SESSION_PART="" AGENT_PART="" VIM_PART="" ACCT_PART="" REPO_PART="" PR_PART=""
+  SESSION_PART="" AGENT_PART="" VIM_PART="" REPO_PART="" PR_PART=""
 fi
 
 # Directory segment: abbreviated path (~ for $HOME, deep paths collapsed).
@@ -748,9 +749,13 @@ fi
 # in any dynamic value (model, session, dir, branch, account) isn't treated as
 # a printf format specifier.
 # Claude Code truncates an over-wide line from the right, so order is priority:
-# the "where am I" run (dir, worktree, branch, PR) sits ahead of the free-text
-# session name and the account, which are what a narrow terminal gives up.
-LINE1="${BOLD}${MODEL_COLOR}🤖 ${MODEL}${RESET}${MODELSW_PART}${VER_PART}${EFFORT_PART}${THINK_PART}${FAST_PART}${STYLE_PART}${AGENT_PART}${VIM_PART}${PLAN_PART}  ${BOLD}${BLUE}📂 ${DIR_LABEL}${RESET}${WT_PART}${REPO_PART}${BRANCH}${PR_PART}${SESSION_PART}${ACCT_PART}"
+# who you're signed in as leads (wrong account is the costly mistake on a
+# multi-profile machine), then the model, then the "where am I" run (dir,
+# worktree, branch, PR), and the free-text session name is what a narrow
+# terminal gives up.
+WHO_PART="${ACCT_PART}${PLAN_PART}"; WHO_PART="${WHO_PART# }"
+[ -n "$WHO_PART" ] && WHO_PART="${WHO_PART}  "
+LINE1="${WHO_PART}${BOLD}${MODEL_COLOR}🤖 ${MODEL}${RESET}${MODELSW_PART}${VER_PART}${EFFORT_PART}${THINK_PART}${FAST_PART}${STYLE_PART}${AGENT_PART}${VIM_PART}  ${BOLD}${BLUE}📂 ${DIR_LABEL}${RESET}${WT_PART}${REPO_PART}${BRANCH}${PR_PART}${SESSION_PART}"
 printf '%b\n' "$LINE1"
 
 # ── line 2: context window bar + token counts ─────────────────────────────────

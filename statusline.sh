@@ -240,15 +240,27 @@ for _cc in "$_CLAUDE_CFG/.claude.json" "$HOME/.claude.json"; do
   ACCOUNT_EMAIL="$_email"
   ACCOUNT_ORG=$(jq -r '.oauthAccount.organizationName // empty' "$_cc" 2>/dev/null)
   _tier=$(jq -r '(.oauthAccount.userRateLimitTier // .oauthAccount.organizationRateLimitTier) // empty' "$_cc" 2>/dev/null)
-  _extra=$(jq -r '.oauthAccount.hasExtraUsageEnabled // false' "$_cc" 2>/dev/null)
+  # organizationType names the subscription itself; the rate-limit tier only
+  # adds the Max multiplier. (Extra usage is pay-as-you-go credits, which Pro
+  # accounts can have too, so it says nothing about the plan.)
+  _otype=$(jq -r '.oauthAccount.organizationType // empty' "$_cc" 2>/dev/null)
   case "$_tier" in
-    *max_20x*)                   PLAN_NAME="Max 20x" ;;
-    *max_5x*)                    PLAN_NAME="Max 5x" ;;
-    *max_1x*)                    PLAN_NAME="Max 1x" ;;
-    *claude_pro*|*default_claude_ai*)
-      [ "$_extra" = "true" ] && PLAN_NAME="Max" || PLAN_NAME="Pro" ;;
-    "") ;;
-    *) PLAN_NAME="$_tier" ;;
+    *max_20x*) PLAN_NAME="Max 20x" ;;
+    *max_5x*)  PLAN_NAME="Max 5x" ;;
+    *max_1x*)  PLAN_NAME="Max 1x" ;;
+    *)
+      case "$_otype" in
+        claude_max)        PLAN_NAME="Max" ;;
+        claude_pro)        PLAN_NAME="Pro" ;;
+        claude_team)       PLAN_NAME="Team" ;;
+        claude_enterprise) PLAN_NAME="Enterprise" ;;
+        *)
+          case "$_tier" in
+            *claude_pro*|*default_claude_ai*) PLAN_NAME="Pro" ;;
+            "") ;;
+            *) PLAN_NAME="$_tier" ;;
+          esac ;;
+      esac ;;
   esac
   break
 done

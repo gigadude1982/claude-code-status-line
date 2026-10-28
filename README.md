@@ -264,14 +264,16 @@ bash install.sh
 
 ## ✨ Plan detection
 
-The script reads `~/.claude.json` to determine your subscription tier and displays it in the header:
+The script reads `~/.claude.json` to determine your subscription and displays it in the header. The Max multiplier comes from the rate-limit tier; otherwise the plan comes from `organizationType`:
 
-| Tier | Label |
-|------|-------|
-| `default_claude_max_5x` | Max 5x |
-| `default_claude_max_20x` | Max 20x |
-| `default_claude_max_1x` | Max 1x |
-| `claude_pro` | Pro (or Max if extra usage enabled) |
+| Field | Value | Label |
+|-------|-------|-------|
+| rate-limit tier | `default_claude_max_5x` | Max 5x |
+| rate-limit tier | `default_claude_max_20x` | Max 20x |
+| rate-limit tier | `default_claude_max_1x` | Max 1x |
+| `organizationType` | `claude_max` · `claude_pro` · `claude_team` · `claude_enterprise` | Max · Pro · Team · Enterprise |
+
+Extra usage (pay-as-you-go credits) doesn't change the plan label; it shows as 💳 on the usage rows instead.
 
 ## 🛟 Graceful degradation
 

@@ -221,7 +221,16 @@ Add the `statusLine` block printed by `install.sh` to `~/.claude/settings.json`:
 
 ### 🌗 Light vs dark backgrounds
 
-Labels/secondary text render **white on dark** backgrounds and **grey on light** ones. The script detects the background from `$COLORFGBG` when the terminal exports it; otherwise it assumes dark (the common case, e.g. macOS Terminal.app). If you use a light-background terminal that doesn't set `COLORFGBG`, force it:
+The default palette is neon-bright, tuned for dark terminals. On a light background the whole palette switches to deeper shades of the same hues (teal for cyan, dark gold for yellow, forest green for green, and so on). Labels go grey, empty bar cells go faint, and the bars keep their green→red ramp. In dark mode nothing changes.
+
+The background is detected in this order:
+
+1. `CLAUDE_STATUSLINE_BG=light|dark`, if set
+2. `$COLORFGBG`, which iTerm2, Konsole, rxvt and others export when the tab opens (so after switching a profile's colors, open a new tab)
+3. Claude Code's own `/theme` setting (`light`, `light-ansi`, `light-daltonized`) when the terminal exports nothing
+4. otherwise dark
+
+To force it:
 
 ```bash
 export CLAUDE_STATUSLINE_BG=light   # or: dark

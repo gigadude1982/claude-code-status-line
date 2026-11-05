@@ -306,22 +306,55 @@ BAR_EMPTY='\033[38;5;240m'
 # the usage is.
 GRAD=(46 46 82 82 118 154 190 226 226 220 214 214 208 208 202 202 196 196 160 124)
 DIM='\033[38;5;255m'   # default: assume dark background → white labels
+# The usage bars' pace tick wants maximum contrast against both the fill and
+# the empty cells: bright white on a dark terminal, near-black on a light one.
+PACE_TICK='\033[1;38;5;255m'
+
+# Background detection, most to least authoritative: an explicit override, the
+# terminal's own $COLORFGBG (set at tab launch, so it reflects the profile the
+# tab opened with), then Claude Code's /theme setting (light, light-ansi,
+# light-daltonized …) for terminals that export nothing. Default: dark.
+LIGHT_BG=""
 case "$CLAUDE_STATUSLINE_BG" in
-  light) DIM='\033[38;5;245m' ;;
-  dark)  DIM='\033[38;5;255m' ;;
+  light) LIGHT_BG=1 ;;
+  dark)  ;;
   *)
     if [ -n "$COLORFGBG" ]; then
-      _bg="${COLORFGBG##*;}"
-      case "$_bg" in
-        7|9|10|11|12|13|14|15) DIM='\033[38;5;245m' ;;  # light background → grey
+      case "${COLORFGBG##*;}" in
+        7|9|10|11|12|13|14|15) LIGHT_BG=1 ;;
+      esac
+    else
+      _cfg="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
+      [ -f "$_cfg" ] && case "$(jq -r '.theme // empty' "$_cfg" 2>/dev/null)" in
+        light*) LIGHT_BG=1 ;;
       esac
     fi
     ;;
 esac
-# The usage bars' pace tick wants maximum contrast against both the fill and
-# the empty cells: bright white on a dark terminal, near-black on a light one.
-PACE_TICK='\033[1;38;5;255m'
-[ "$DIM" = '\033[38;5;245m' ] && PACE_TICK='\033[1;38;5;236m'
+
+# On a light background the neon palette washes out (yellow, cyan and green
+# measure ~1:1 contrast on white), so swap in deeper shades of the same hues.
+# Each was picked for contrast against white, light grey and Solarized Light,
+# keeping the hues distinct enough that the colour still carries meaning.
+if [ -n "$LIGHT_BG" ]; then
+  CYAN='\033[38;5;30m'      # deep teal
+  BLUE='\033[38;5;25m'      # strong azure
+  GREEN='\033[38;5;28m'     # forest green
+  YELLOW='\033[38;5;94m'    # dark gold (true yellow is unreadable on white)
+  RED='\033[38;5;160m'      # crimson
+  MAGENTA='\033[38;5;127m'  # deep magenta
+  ORANGE='\033[38;5;166m'   # burnt orange
+  PURPLE='\033[38;5;92m'    # violet
+  PINK='\033[38;5;163m'     # raspberry
+  BRONZE='\033[38;5;130m'   # deep bronze
+  GOLD='\033[38;5;136m'     # dark goldenrod
+  PLATINUM='\033[38;5;60m'  # slate
+  ICE='\033[38;5;24m'       # steel blue
+  DIM='\033[38;5;242m'      # mid grey labels
+  BAR_EMPTY='\033[38;5;250m' # faint, so unfilled cells recede on light bg
+  PACE_TICK='\033[1;38;5;236m'
+  GRAD=(28 28 34 34 70 70 106 142 136 136 172 172 166 166 202 202 160 160 124 88)
+fi
 
 # Compact mode (CLAUDE_STATUSLINE_COMPACT=1) trims the line down to the
 # essentials — model, plan, dir, branch + git status, the context bar, cost,
